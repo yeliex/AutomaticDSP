@@ -1,5 +1,7 @@
 # AutomaticDSP 技术方案
 
+> 当前 M1 实现以 `docs/development-plan.md` 为准：HTTP 使用 .NET 内置 `HttpListener`，JSON 使用 `Newtonsoft.Json`，先实现 `/health`、`/state`、`/tasks`、`/history`。本文中 GraphQL schema 保留为后续查询增强候选，不是 M1 交付范围。
+
 ## 总体架构
 
 AutomaticDSP 分为游戏内 Mod 和外部 GraphQL 接口两部分。

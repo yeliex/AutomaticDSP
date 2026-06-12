@@ -1,5 +1,7 @@
 # AutomaticDSP 需求说明
 
+> 当前 M1 实现以 `docs/development-plan.md` 为准：先提供本地 REST/JSON 只读观测接口，`GET /state` 读取快照，`GET /tasks` 与 `GET /history` 独立返回任务和历史。本文中 GraphQL 与任务执行描述保留为后续阶段目标草案。
+
 ## 背景
 
 AutomaticDSP 是一个用于《戴森球计划》的自动化控制 Mod。目标是让外部 AI Agent 能够程序化读取游戏状态，并向游戏提交顺序执行的任务，从而逐步完成生产线建设、物流建设和戴森球建设。

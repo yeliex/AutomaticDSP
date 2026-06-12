@@ -1,12 +1,26 @@
 # AutomaticDSP
 
-AutomaticDSP 是一个用于《戴森球计划》的自动化控制 Mod，目标是让外部 AI Agent 能够通过 GraphQL 查询游戏状态，并顺序提交游戏内任务。
+AutomaticDSP 是一个用于《戴森球计划》的自动化控制 Mod，目标是让外部 AI Agent 能够通过本地接口查询游戏状态，并顺序提交游戏内任务。
 
-当前仓库处于方案和工程骨架阶段：
+当前仓库包含方案文档、BepInEx 工程骨架和 M1 只读状态观测实现：
 
 - 需求文档：`docs/requirements.md`
 - 技术方案：`docs/technical-design.md`
+- 开发计划：`docs/development-plan.md`
 - BepInEx 工程骨架：`src/AutomaticDSP`
+
+M1 只读状态观测接口默认监听：
+
+```text
+http://127.0.0.1:39270/
+```
+
+可用端点：
+
+- `GET /health`
+- `GET /state`
+- `GET /tasks`
+- `GET /history`
 
 默认游戏目录：
 
@@ -25,3 +39,5 @@ dotnet build .\src\AutomaticDSP\AutomaticDSP.csproj
 ```powershell
 dotnet build .\src\AutomaticDSP\AutomaticDSP.csproj -p:DSPGameDir="D:\SteamLibrary\steamapps\common\Dyson Sphere Program"
 ```
+
+运行时需要将 `bin\Debug\net472` 下的 Mod DLL 与 NuGet 依赖一起放入 BepInEx 插件目录。
