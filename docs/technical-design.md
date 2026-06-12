@@ -1,7 +1,7 @@
 # AutomaticDSP 技术方案
 
 > 当前 M1 实现以 `docs/development-plan.md` 为准：HTTP 使用 .NET 内置 `HttpListener`，JSON 使用 `Newtonsoft.Json`，先实现 `/health`、`/state`、`/tasks`、`/history`。本文中 GraphQL schema 保留为后续查询增强候选，不是 M1 交付范围。
-> M1 运行时数据和最新快照统一写入 `BepInEx/cache/AutomaticDSP`。
+> M1 运行时数据、最新快照和 GameMain 调试摘要统一写入 `BepInEx/cache/AutomaticDSP`；主菜单、菜单演示或加载界面不保存游戏内数据快照。
 > M1 HTTP 配置项包含 `HTTP.Host` 和 `HTTP.Port`，默认 `127.0.0.1:39270`，可把 host 改成 `0.0.0.0` 供外部调用。
 
 ## 总体架构
@@ -382,16 +382,26 @@ query Queue {
 
 第一阶段建议先实现增量较低的全量当前行星快照，再按性能瓶颈优化空间索引。
 
-快照字段建议：
+第一阶段已确定保存的稳定状态字段：
 
-- `tick`
-- `gameTick`
-- `currentPlanetId`
-- `player`
-- `inventory`
-- `technology`
-- `entities`
-- `tasks`
+- `metadata`：快照 ID、游戏 tick、采样时间、采样耗时、当前恒星/行星 ID、schema 版本。
+- `game`：存档名、创建时间、运行 tick/time、生命周期状态、菜单演示状态、当前位置、星系摘要、工厂数量、戴森球数量、根系统可用性。
+- `player`：伊卡洛斯位置、宇宙位置、朝向、移动状态、是否在行星上、建造范围和交互范围。
+- `mecha`：生命、核心能量、反应堆能量、沙土、建造无人机状态。
+- `inventory`：背包槽位、空槽、物品列表和按物品汇总。
+- `replicator`：背包制造队列字段先保留结构，后续补齐映射。
+- `research`：当前研究、研究队列、hash 速率和停滞状态。
+- `currentPlanet`：当前行星基础信息、风能/太阳能倍率、资源矿脉摘要。
+- `factory`：当前行星工厂摘要、玩家附近建筑、建筑类型汇总、传送带/分拣器数量和附近缺电建筑。
+- `production`：当前行星生产、消耗和电力统计寄存器的非零项。
+- `power`：电网数量、蓄电量、发电/耗电/充放电统计。
+- `alerts`：由快照推导出的缺电、研究停滞等告警。
+- `buildContext`：建造决策上下文字段先保留结构，后续补齐可建造建筑和缺口。
+- `debug`：`GameMain`、当前 `GameMain` 实例、`GameMain.data`、`DSPGame` 的字段/属性摘要，仅用于早期字段映射调试。
+
+任务状态不放在 `/state` 快照里，第一阶段通过 `GET /tasks` 查询内存中的待执行和执行中命令，通过 `GET /history` 查询 SQLite 中的历史命令。
+
+主菜单、菜单演示或加载界面不生成快照；如果之前存在 `snapshots/latest.json` 或 `diagnostics/gameMain.json`，进入非对局状态时应清理。
 
 对于建筑、矿脉等数量较多的实体，resolver 必须支持 `limit`，并优先支持空间过滤。
 

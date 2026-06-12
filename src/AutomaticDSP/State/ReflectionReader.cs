@@ -69,6 +69,24 @@ namespace AutomaticDSP.State
             }
         }
 
+        public static bool GetBool(object target, bool defaultValue, params string[] names)
+        {
+            var value = Get(target, names);
+            if (value == null)
+            {
+                return defaultValue;
+            }
+
+            try
+            {
+                return Convert.ToBoolean(value);
+            }
+            catch
+            {
+                return defaultValue;
+            }
+        }
+
         public static double GetDouble(object target, double defaultValue, params string[] names)
         {
             var value = Get(target, names);

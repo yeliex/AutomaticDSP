@@ -17,7 +17,7 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 - 暂不实现 GraphQL，先用 REST/JSON 跑通可观测性。
 - HTTP 服务使用 .NET 内置 `HttpListener`，JSON 序列化使用 `Newtonsoft.Json`。
 - HTTP 默认监听 `127.0.0.1:39270`，其中 `HTTP.Host` 和 `HTTP.Port` 都是配置项；需要外部访问时可以把 `HTTP.Host` 改成 `0.0.0.0`。
-- 未加载存档或未开始对局时不生成状态快照，`GET /state` 返回明确的不可用状态。
+- 未加载存档、主菜单、菜单演示或加载界面不生成状态快照，`GET /state` 返回明确的不可用状态，并清理旧的 `snapshots/latest.json` 与 `diagnostics/gameMain.json`。
 
 采样间隔参考：
 
@@ -65,6 +65,22 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 - `currentPlanetId`
 - `currentStarId`
 - `schemaVersion`
+
+### game
+
+`game` 是从 `GameMain` 和 `GameMain.data` 抽取的稳定对局摘要，用来判断当前快照属于哪个存档、处于什么运行状态，以及哪些根系统可用。
+
+- 存档名称。
+- 存档创建时间。
+- 当前 `gameTick` 和 `gameTime`。
+- 当前运行段 `onceGameTick` 和 `onceGameTime`。
+- 沙盒工具是否启用。
+- 生命周期状态：运行中、加载中、暂停、结束、加载失败、其他场景、菜单演示。
+- 当前恒星和当前行星 ID、名称。
+- 玩家是否在行星上。
+- 星系摘要：恒星数量。
+- 存档数据摘要：行星工厂数量、戴森球数组数量、引导任务状态、地表是否就绪。
+- 根系统可用性：玩家、科技历史、统计、偏好、太空层、星际物流、告警、垃圾系统。
 
 ### player
 
@@ -192,6 +208,17 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 - 玩家附近资源点。
 - 基础生产线所需物品缺口摘要。
 
+### debug
+
+`debug` 用于早期字段映射，不作为 Agent 长期依赖的稳定查询契约。
+
+- `GameMain` 静态字段和属性摘要。
+- 当前 `GameMain` 实例字段和属性摘要。
+- `GameMain.data` 字段和属性摘要。
+- `DSPGame` 静态字段和属性摘要。
+- 同步写入 `BepInEx/cache/AutomaticDSP/diagnostics/gameMain.json` 便于调试。
+- 仅在真实对局载入后保存；主菜单、菜单演示或加载界面不保存。
+
 ## 第一阶段接口
 
 ### GET /health
@@ -271,13 +298,15 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 - `GET /history` 空实现。
 - SQLite 初始化和历史表结构，数据库位于 `BepInEx/cache/AutomaticDSP/data/history.sqlite`。
 - 最新状态快照写入 `BepInEx/cache/AutomaticDSP/snapshots/latest.json`。
+- `GameMain` 调试摘要写入 `BepInEx/cache/AutomaticDSP/diagnostics/gameMain.json`。
 
 验证：
 
 - 进入游戏后日志显示快照定时生成。
 - `GET /health` 返回最近快照 tick。
-- `GET /state` 至少返回 metadata、player、inventory、replicator、research、currentPlanet、factory、production、power、alerts。
+- `GET /state` 至少返回 metadata、game、player、inventory、replicator、research、currentPlanet、factory、production、power、alerts。
 - 不进入游戏时接口返回明确状态，而不是异常。
+- 停留在主菜单或菜单演示时不会保留旧的 `latest.json` 或 `gameMain.json`。
 
 ### M2：状态完整性补齐
 
@@ -383,6 +412,7 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 - 默认端口 `39270`。
 - SQLite 只存历史命令，不存完整游戏快照。
 - 最新 JSON 快照写入 `BepInEx/cache/AutomaticDSP/snapshots/latest.json`，用于调试和外部观测。
+- GameMain 调试摘要写入 `BepInEx/cache/AutomaticDSP/diagnostics/gameMain.json`，只在真实对局载入后保存。
 
 ## 待确认问题
 

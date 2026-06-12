@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Reflection;
 using System.Text;
 using AutomaticDSP.Serialization;
 using BepInEx.Logging;
@@ -21,7 +22,9 @@ namespace AutomaticDSP.State
         {
             NullValueHandling = NullValueHandling.Include
         };
+        private readonly string diagnosticsDirectory;
         private readonly string snapshotDirectory;
+        private DateTimeOffset lastDiagnosticsWriteAt = DateTimeOffset.MinValue;
         private long lastCaptureGameTick = -1;
         private long nextSnapshotId = 1;
         private bool inactiveLogged;
@@ -32,8 +35,10 @@ namespace AutomaticDSP.State
         public StateSnapshotService(int snapshotIntervalTicks, string cacheRootPath, ManualLogSource log)
         {
             this.snapshotIntervalTicks = Math.Max(1, snapshotIntervalTicks);
+            diagnosticsDirectory = Path.Combine(cacheRootPath, "diagnostics");
             snapshotDirectory = Path.Combine(cacheRootPath, "snapshots");
             this.log = log;
+            ClearPersistedSnapshots();
         }
 
         public StateSnapshot GetLatestSnapshot()
@@ -81,6 +86,7 @@ namespace AutomaticDSP.State
                 var data = new JsonObject();
                 var metadata = CaptureMetadata(gameTick);
                 data["metadata"] = metadata;
+                data["game"] = CaptureGameState();
                 data["player"] = CapturePlayer();
                 data["mecha"] = CaptureMecha();
                 data["inventory"] = CaptureInventory();
@@ -92,6 +98,8 @@ namespace AutomaticDSP.State
                 data["power"] = CapturePower();
                 data["alerts"] = CaptureAlerts(data);
                 data["buildContext"] = CaptureBuildContext(data);
+                var debug = CaptureDebugState();
+                data["debug"] = debug;
 
                 stopwatch.Stop();
                 ((JsonObject)data["metadata"])["captureDurationMs"] = stopwatch.Elapsed.TotalMilliseconds;
@@ -103,6 +111,7 @@ namespace AutomaticDSP.State
                 inactiveLogged = false;
                 inactiveSnapshotFileChecked = false;
                 WriteLatestSnapshot(snapshot);
+                WriteGameMainDiagnostics(debug);
 
                 if (snapshot.Id == 1 || snapshot.Id % 60 == 0)
                 {
@@ -123,7 +132,7 @@ namespace AutomaticDSP.State
 
             if (!inactiveSnapshotFileChecked)
             {
-                DeleteLatestSnapshot();
+                ClearPersistedSnapshots();
                 inactiveSnapshotFileChecked = true;
             }
 
@@ -157,6 +166,47 @@ namespace AutomaticDSP.State
             }
         }
 
+        private void WriteGameMainDiagnostics(JsonObject debug)
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (now - lastDiagnosticsWriteAt < TimeSpan.FromSeconds(1))
+            {
+                return;
+            }
+
+            lastDiagnosticsWriteAt = now;
+            try
+            {
+                WriteJsonFile(diagnosticsDirectory, "gameMain.json", debug);
+            }
+            catch (Exception ex)
+            {
+                log.LogWarning($"Failed to write GameMain diagnostics: {ex.Message}");
+            }
+        }
+
+        private void WriteJsonFile(string directory, string fileName, object payload)
+        {
+            Directory.CreateDirectory(directory);
+            var path = Path.Combine(directory, fileName);
+            var tempPath = path + ".tmp";
+            var json = JsonConvert.SerializeObject(payload, Formatting.None, jsonSettings);
+            File.WriteAllText(tempPath, json, Encoding.UTF8);
+
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+
+            File.Move(tempPath, path);
+        }
+
+        private void ClearPersistedSnapshots()
+        {
+            DeleteLatestSnapshot();
+            DeleteGameMainDiagnostics();
+        }
+
         private void DeleteLatestSnapshot()
         {
             try
@@ -179,6 +229,29 @@ namespace AutomaticDSP.State
             }
         }
 
+        private void DeleteGameMainDiagnostics()
+        {
+            try
+            {
+                lastDiagnosticsWriteAt = DateTimeOffset.MinValue;
+                var diagnosticsPath = Path.Combine(diagnosticsDirectory, "gameMain.json");
+                var tempPath = diagnosticsPath + ".tmp";
+                if (File.Exists(tempPath))
+                {
+                    File.Delete(tempPath);
+                }
+
+                if (File.Exists(diagnosticsPath))
+                {
+                    File.Delete(diagnosticsPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                log.LogWarning($"Failed to delete stale GameMain diagnostics: {ex.Message}");
+            }
+        }
+
         private JsonObject CaptureMetadata(long gameTick)
         {
             return new JsonObject
@@ -192,6 +265,271 @@ namespace AutomaticDSP.State
                 ["currentStarId"] = GameMain.localStar?.id,
                 ["schemaVersion"] = 1
             };
+        }
+
+        private JsonObject CaptureGameState()
+        {
+            var data = GameMain.data;
+            var galaxy = GameMain.galaxy;
+
+            return new JsonObject
+            {
+                ["available"] = true,
+                ["name"] = GameMain.gameName,
+                ["creationTime"] = GameMain.creationTime,
+                ["gameTick"] = GameMain.gameTick,
+                ["gameTime"] = GameMain.gameTime,
+                ["onceGameTick"] = GameMain.onceGameTick,
+                ["onceGameTime"] = GameMain.onceGameTime,
+                ["sandboxToolsEnabled"] = GameMain.sandboxToolsEnabled,
+                ["lifecycle"] = new JsonObject
+                {
+                    ["notNull"] = GameMain.notNull,
+                    ["isRunning"] = GameMain.isRunning,
+                    ["isLoading"] = GameMain.isLoading,
+                    ["isPaused"] = GameMain.isPaused,
+                    ["isFullscreenPaused"] = GameMain.isFullscreenPaused,
+                    ["isEnded"] = GameMain.isEnded,
+                    ["loadErrored"] = GameMain.loadErrored,
+                    ["inOtherScene"] = GameMain.inOtherScene,
+                    ["isMenuDemo"] = DSPGame.IsMenuDemo,
+                    ["menuDemoLoaded"] = DSPGame.MenuDemoLoaded
+                },
+                ["location"] = new JsonObject
+                {
+                    ["localStarId"] = GameMain.localStar?.id,
+                    ["localStarName"] = GameMain.localStar?.displayName,
+                    ["localPlanetId"] = GameMain.localPlanet?.id,
+                    ["localPlanetName"] = GameMain.localPlanet?.displayName,
+                    ["playerOnPlanet"] = GameMain.localPlanet != null
+                },
+                ["galaxy"] = new JsonObject
+                {
+                    ["available"] = galaxy != null,
+                    ["starCount"] = ReflectionReader.GetInt(galaxy, 0, "starCount")
+                },
+                ["data"] = new JsonObject
+                {
+                    ["available"] = data != null,
+                    ["factoryCount"] = ReflectionReader.GetInt(data, 0, "factoryCount"),
+                    ["dysonSphereCount"] = data?.dysonSpheres?.Length ?? 0,
+                    ["guideRunning"] = ReflectionReader.GetBool(data, false, "guideRunning"),
+                    ["guideComplete"] = ReflectionReader.GetBool(data, false, "guideComplete"),
+                    ["isLandReady"] = ReflectionReader.GetBool(data, false, "isLandReady")
+                },
+                ["systems"] = new JsonObject
+                {
+                    ["hasMainPlayer"] = GameMain.mainPlayer != null,
+                    ["hasHistory"] = GameMain.history != null,
+                    ["hasStatistics"] = GameMain.statistics != null,
+                    ["hasPreferences"] = GameMain.preferences != null,
+                    ["hasSpaceSector"] = GameMain.spaceSector != null,
+                    ["hasGalacticTransport"] = data?.galacticTransport != null,
+                    ["hasWarningSystem"] = data?.warningSystem != null,
+                    ["hasTrashSystem"] = data?.trashSystem != null
+                }
+            };
+        }
+
+        private JsonObject CaptureDebugState()
+        {
+            var data = SafeGet(() => GameMain.data);
+            var instance = SafeGet(() => GameMain.instance);
+
+            return new JsonObject
+            {
+                ["capturedAt"] = DateTimeOffset.UtcNow,
+                ["gameSessionLoaded"] = IsGameSessionLoaded(),
+                ["gameMainStatic"] = CaptureMembers(null, typeof(GameMain), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static, 120),
+                ["gameMainInstance"] = instance == null ? null : CaptureMembers(instance, typeof(GameMain), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance, 160),
+                ["gameData"] = data == null ? null : CaptureMembers(data, typeof(GameData), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance, 180),
+                ["dspGameStatic"] = CaptureMembers(null, typeof(DSPGame), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static, 120)
+            };
+        }
+
+        private static JsonObject CaptureMembers(object target, Type type, BindingFlags flags, int limit)
+        {
+            var result = new JsonObject
+            {
+                ["type"] = type.FullName
+            };
+            var members = new JsonObject();
+            var count = 0;
+
+            foreach (var field in type.GetFields(flags))
+            {
+                if (count >= limit)
+                {
+                    break;
+                }
+
+                members[field.Name] = ReadMember(() => field.GetValue(target));
+                count++;
+            }
+
+            foreach (var property in type.GetProperties(flags))
+            {
+                if (count >= limit)
+                {
+                    break;
+                }
+
+                if (property.GetIndexParameters().Length > 0)
+                {
+                    continue;
+                }
+
+                members[property.Name] = ReadMember(() => property.GetValue(target, null));
+                count++;
+            }
+
+            result["memberCount"] = count;
+            result["members"] = members;
+            return result;
+        }
+
+        private static object ReadMember(Func<object> read)
+        {
+            try
+            {
+                return ToDebugValue(read());
+            }
+            catch (Exception ex)
+            {
+                return new JsonObject
+                {
+                    ["error"] = ex.GetType().Name,
+                    ["message"] = ex.Message
+                };
+            }
+        }
+
+        private static object ToDebugValue(object value)
+        {
+            if (value == null)
+            {
+                return null;
+            }
+
+            var type = value.GetType();
+            if (type.IsPrimitive || value is string || value is decimal || value is DateTime || value is DateTimeOffset)
+            {
+                return value;
+            }
+
+            if (type.IsEnum)
+            {
+                return value.ToString();
+            }
+
+            if (value is Vector3 vector3)
+            {
+                return Vector(vector3);
+            }
+
+            if (value is VectorLF3 vectorLf3)
+            {
+                return Vector(vectorLf3);
+            }
+
+            if (value is Array array)
+            {
+                return ArraySummary(array);
+            }
+
+            if (value is ICollection collection)
+            {
+                return new JsonObject
+                {
+                    ["type"] = type.FullName,
+                    ["count"] = collection.Count
+                };
+            }
+
+            return ObjectSummary(value);
+        }
+
+        private static JsonObject ArraySummary(Array array)
+        {
+            var result = new JsonObject
+            {
+                ["type"] = array.GetType().FullName,
+                ["elementType"] = array.GetType().GetElementType()?.FullName,
+                ["length"] = array.Length,
+                ["rank"] = array.Rank
+            };
+
+            var sample = new List<object>();
+            if (array.Rank == 1)
+            {
+                for (var i = 0; i < array.Length && sample.Count < 16; i++)
+                {
+                    var value = array.GetValue(i);
+                    if (value == null)
+                    {
+                        sample.Add(null);
+                    }
+                    else
+                    {
+                        var valueType = value.GetType();
+                        sample.Add(valueType.IsPrimitive || value is string || valueType.IsEnum ? ToDebugValue(value) : ObjectSummary(value));
+                    }
+                }
+            }
+
+            result["sample"] = sample;
+            return result;
+        }
+
+        private static JsonObject ObjectSummary(object value)
+        {
+            var type = value.GetType();
+            var result = new JsonObject
+            {
+                ["type"] = type.FullName
+            };
+
+            AddSummaryMember(result, value, "id");
+            AddSummaryMember(result, value, "index");
+            AddSummaryMember(result, value, "name");
+            AddSummaryMember(result, value, "displayName");
+            AddSummaryMember(result, value, "planetId");
+            AddSummaryMember(result, value, "starId");
+            AddSummaryMember(result, value, "factoryIndex");
+            AddSummaryMember(result, value, "count");
+            AddSummaryMember(result, value, "length");
+            AddSummaryMember(result, value, "cursor");
+            AddSummaryMember(result, value, "entityCursor");
+            AddSummaryMember(result, value, "factoryCount");
+            AddSummaryMember(result, value, "starCount");
+            return result;
+        }
+
+        private static void AddSummaryMember(JsonObject result, object target, string name)
+        {
+            var value = ReflectionReader.Get(target, name);
+            if (value == null)
+            {
+                return;
+            }
+
+            var type = value.GetType();
+            if (type.IsPrimitive || value is string || type.IsEnum)
+            {
+                result[name] = ToDebugValue(value);
+            }
+        }
+
+        private static T SafeGet<T>(Func<T> read)
+        {
+            try
+            {
+                return read();
+            }
+            catch
+            {
+                return default;
+            }
         }
 
         private JsonObject CapturePlayer()
@@ -633,9 +971,18 @@ namespace AutomaticDSP.State
             try
             {
                 return GameMain.data != null &&
+                       GameMain.notNull &&
+                       GameMain.isRunning &&
+                       !GameMain.isLoading &&
+                       !GameMain.isEnded &&
+                       !GameMain.loadErrored &&
+                       !GameMain.inOtherScene &&
+                       !DSPGame.IsMenuDemo &&
+                       !DSPGame.MenuDemoLoaded &&
                        GameMain.mainPlayer != null &&
                        GameMain.history != null &&
                        GameMain.statistics != null &&
+                       GameMain.galaxy != null &&
                        GameMain.gameTick > 0;
             }
             catch
