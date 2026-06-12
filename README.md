@@ -1,6 +1,6 @@
 # AutomaticDSP
 
-AutomaticDSP 是一个用于《戴森球计划》的自动化控制 Mod，目标是让外部 AI Agent 能够查询游戏状态，并顺序提交游戏内任务。
+AutomaticDSP 是一个用于《戴森球计划》的自动化控制 Mod，目标是让外部 AI Agent 能够通过 GraphQL 查询游戏状态，并顺序提交游戏内任务。
 
 当前仓库处于方案和工程骨架阶段：
 

@@ -2,14 +2,15 @@
 
 ## 总体架构
 
-AutomaticDSP 分为游戏内 Mod 和外部调用接口两部分。
+AutomaticDSP 分为游戏内 Mod 和外部 GraphQL 接口两部分。
 
 ```mermaid
 flowchart LR
-  Agent["外部 AI Agent"] --> Bridge["本地 HTTP/WebSocket 接口"]
-  Bridge --> Query["Query DSL 引擎"]
-  Bridge --> Queue["唯一任务队列"]
+  Agent["外部 AI Agent"] --> GraphQL["本地 GraphQL 接口"]
+  GraphQL --> Query["GraphQL Resolver"]
+  GraphQL --> Mutation["GraphQL Mutation"]
   Query --> Snapshot["游戏状态快照"]
+  Mutation --> Queue["唯一任务队列"]
   Queue --> Executor["命令执行器"]
   Executor --> Game["DSP 游戏对象"]
   Game --> Snapshot
@@ -18,14 +19,15 @@ flowchart LR
 游戏内 Mod 负责：
 
 - 在 Unity 主线程读取游戏状态。
-- 维护查询快照。
-- 接收外部查询与任务请求。
+- 维护不可变状态快照。
+- 通过 GraphQL resolver 暴露查询。
+- 接收 GraphQL mutation 提交和取消任务。
 - 维护唯一顺序任务队列。
 - 在游戏主线程逐帧执行命令。
 
 外部 AI Agent 负责：
 
-- 根据 Query DSL 查询结果做规划。
+- 根据 GraphQL 查询结果做规划。
 - 拆分目标为任务和命令。
 - 观察任务状态并在失败时重新规划。
 
@@ -33,171 +35,225 @@ flowchart LR
 
 Mod 使用 BepInEx 5 插件形式加载。插件入口为 `BaseUnityPlugin`。
 
-第一版工程骨架只包含：
+第一版工程骨架包含：
 
 - BepInEx 插件入口。
 - 对 DSP 游戏程序集的引用配置。
 - 本地构建说明。
 
-后续再按阶段添加 Query DSL、队列、命令执行器和建造适配器。
+后续再按阶段添加 GraphQL 服务、快照服务、队列、命令执行器和建造适配器。
+
+`TargetFramework` 保持 `net472`。即使本机安装了 .NET 10 SDK，插件仍需要面向 Unity Mono 和 BepInEx 5 兼容的运行环境。
 
 ## 线程模型
 
-Unity 和 DSP 游戏对象只能在游戏主线程安全访问。外部接口线程不得直接读写游戏对象。
+Unity 和 DSP 游戏对象只能在游戏主线程安全访问。GraphQL 请求线程不得直接读写游戏对象。
 
 推荐模型：
 
 1. `Plugin.Update()` 在主线程驱动状态采样和命令执行。
-2. HTTP/WebSocket 服务线程只负责接收请求。
-3. 查询请求读取最近一次不可变快照；需要强一致结果时，将查询请求投递到主线程执行。
-4. 任务提交请求只写入线程安全入队缓冲区。
-5. 命令执行器每帧从唯一队列中推进当前任务。
+2. GraphQL 服务线程只负责接收请求、执行 resolver 和返回快照数据。
+3. 常规 query 读取最近一次不可变快照。
+4. 需要强一致即时结果时，将采样请求投递到主线程并等待新快照。
+5. mutation 不直接修改游戏对象，只把任务提交或取消请求写入线程安全缓冲区。
+6. 命令执行器每帧从唯一队列中推进当前任务。
 
 ## 模块划分
 
 计划模块：
 
 - `Plugin`：BepInEx 入口，初始化服务。
-- `TransportServer`：本地接口服务，仅监听 `127.0.0.1`。
-- `QueryEngine`：解析并执行 Query DSL。
-- `GameSnapshotService`：生成实体快照。
-- `TaskQueue`：唯一顺序任务队列。
+- `GraphQLServer`：本地 GraphQL 服务，仅监听 `127.0.0.1`。
+- `Schema`：GraphQL 类型、查询和 mutation 定义。
+- `Resolvers`：从快照读取数据，完成过滤、排序、分页。
+- `GameSnapshotService`：生成不可变游戏状态快照。
+- `TaskQueue`：内部唯一顺序任务队列，不作为 GraphQL 实体暴露。
 - `CommandExecutor`：逐帧执行命令。
 - `ValidationService`：校验科技、背包、地形、碰撞和距离。
 - `MovementAdapter`：封装伊卡洛斯移动。
 - `InventoryAdapter`：封装背包和手搓制造。
 - `BuildAdapter`：封装建筑、传送带、分拣器、配方设置。
 
-## Query DSL
+## GraphQL Schema 设计
 
-### 设计原则
+### 查询入口
 
-Query DSL 是只读接口，不改变游戏状态。
+所有查询通过 `snapshot` 进入。
 
-设计目标：
-
-- 让外部 Agent 按实体自由查询。
-- 减少传输体积。
-- 避免外部 Agent 下载全量状态后自行过滤。
-- 让任务、命令和队列状态也能用同一查询模型获取。
-
-### 请求结构
-
-```json
-{
-  "entity": "building",
-  "filter": {
-    "all": [
-      { "field": "planetId", "op": "eq", "value": "current_planet" }
-    ]
-  },
-  "select": ["id", "kind", "position"],
-  "orderBy": [{ "field": "distanceToPlayer", "direction": "asc" }],
-  "limit": 100,
-  "cursor": null
+```graphql
+type Query {
+  snapshot(mode: SnapshotMode = LATEST): Snapshot!
 }
 ```
 
-字段说明：
+`snapshot` 返回不可变对象。单次 GraphQL query 中选取的所有字段都来自同一个 `Snapshot` 实例。
 
-- `entity`：实体类型。
-- `filter`：过滤表达式。
-- `select`：返回字段。为空时返回该实体的默认字段。
-- `orderBy`：排序规则。
-- `limit`：最大返回数量。
-- `cursor`：分页游标。
+```graphql
+type Snapshot {
+  tick: Long!
+  gameTick: Long!
+  player: Player!
+  inventory: Inventory!
+  technology: Technology!
+  currentPlanet: Planet
+  planets(where: PlanetWhere, orderBy: PlanetOrder, limit: Int): [Planet!]!
+  buildings(where: BuildingWhere, orderBy: BuildingOrder, limit: Int): [Building!]!
+  veins(where: VeinWhere, orderBy: VeinOrder, limit: Int): [Vein!]!
+  recipes(where: RecipeWhere, limit: Int): [Recipe!]!
+  items(where: ItemWhere, limit: Int): [Item!]!
+  tasks(where: TaskWhere, orderBy: TaskOrder, limit: Int): [Task!]!
+  task(id: ID!): Task
+}
+```
 
-### 过滤表达式
+### 任务模型
 
-第一阶段支持：
+`task` 是可查询实体。`task_queue` 不是实体，队列视图通过 `tasks(where: { type: QUEUE })` 获取。
 
-- `eq`
-- `neq`
-- `lt`
-- `lte`
-- `gt`
-- `gte`
-- `in`
-- `contains`
-- `within_radius`
-- `within_bbox`
+```graphql
+type Task {
+  id: ID!
+  clientRequestId: String
+  type: TaskType!
+  status: TaskStatus!
+  queueIndex: Int
+  currentCommandIndex: Int
+  createdAt: DateTime!
+  updatedAt: DateTime!
+  error: TaskError
+  commands: [TaskCommand!]!
+}
 
-组合表达式：
+enum TaskType {
+  QUEUE
+}
 
-- `all`：全部条件满足。
-- `any`：任一条件满足。
-- `not`：条件取反。
+enum TaskStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCEL_REQUESTED
+  CANCELLED
+}
 
-### 上下文别名
+type TaskCommand {
+  id: String!
+  type: CommandType!
+  status: CommandStatus!
+  startedAt: DateTime
+  completedAt: DateTime
+  error: TaskError
+}
+```
 
-DSL 支持少量内置别名：
+`TaskCommand` 不是可独立查询实体。它没有顶层 query field，也没有全局列表入口，只能通过 `Task.commands` 读取。
 
-- `current_planet`
-- `player_position`
-- `running_task`
+### Mutation
 
-别名只在服务端解析，不要求外部 Agent 知道游戏内具体 ID。
+任务提交和取消通过 GraphQL mutation 完成。
 
-### 响应结构
+```graphql
+type Mutation {
+  enqueueTask(input: EnqueueTaskInput!): EnqueueTaskPayload!
+  cancelTask(id: ID!): CancelTaskPayload!
+}
+```
 
-```json
-{
-  "entity": "building",
-  "items": [
-    {
-      "id": "building:1:1024",
-      "kind": "smelter",
-      "position": { "x": 130.0, "y": 35.0, "z": -78.5 }
+mutation 只影响任务队列状态，不允许直接绕过队列修改游戏对象。
+
+## 查询示例
+
+一次查询获取玩家、背包、附近建筑和队列任务：
+
+```graphql
+query ObserveFactory {
+  snapshot {
+    tick
+    player {
+      planetId
+      position {
+        x
+        y
+        z
+      }
+      buildRange
     }
-  ],
-  "nextCursor": null,
-  "snapshotTick": 123456,
-  "warnings": []
-}
-```
-
-查询失败时返回：
-
-```json
-{
-  "error": {
-    "code": "invalid_query",
-    "message": "Unsupported operator: regex",
-    "field": "filter.all[0].op"
+    inventory {
+      items {
+        itemId
+        count
+      }
+    }
+    buildings(
+      where: {
+        planetId: CURRENT_PLANET
+        kindIn: [MINER, SMELTER]
+        withinRadius: { center: PLAYER_POSITION, radius: 80 }
+      }
+      orderBy: { field: DISTANCE_TO_PLAYER, direction: ASC }
+      limit: 100
+    ) {
+      id
+      kind
+      prototypeId
+      position {
+        x
+        y
+        z
+      }
+      recipeId
+      workState
+    }
+    tasks(where: { type: QUEUE }, orderBy: { field: QUEUE_INDEX, direction: ASC }) {
+      id
+      status
+      queueIndex
+      currentCommandIndex
+      commands {
+        id
+        type
+        status
+        error {
+          code
+          message
+        }
+      }
+    }
   }
 }
 ```
 
-## 任务队列
+查询单个任务：
 
-### 单队列约束
-
-系统只维护一个任务队列。所有任务按提交顺序进入同一个队列，命令执行器一次只推进一个任务。
-
-这样做的原因：
-
-- 游戏内建造行为与玩家位置强相关。
-- 伊卡洛斯同一时间只能执行一个空间动作。
-- 并行任务容易互相改变地形、库存、供电和建筑占位。
-
-### API 草案
-
-查询使用统一 DSL：
-
-```http
-POST /query
+```graphql
+query TaskStatus($id: ID!) {
+  snapshot {
+    tick
+    task(id: $id) {
+      id
+      status
+      currentCommandIndex
+      error {
+        code
+        message
+      }
+      commands {
+        id
+        type
+        status
+      }
+    }
+  }
+}
 ```
 
-提交任务：
+## API 草案
+
+GraphQL：
 
 ```http
-POST /tasks
-```
-
-取消任务：
-
-```http
-POST /tasks/{taskId}/cancel
+POST /graphql
 ```
 
 健康检查：
@@ -206,7 +262,69 @@ POST /tasks/{taskId}/cancel
 GET /health
 ```
 
-任务状态仍通过 `POST /query` 查询，`/tasks/{taskId}/cancel` 只作为状态修改命令存在。
+第一阶段不再提供独立 `POST /query`、`POST /tasks` 或 `POST /tasks/{taskId}/cancel`。对应能力由 GraphQL query 和 mutation 承担。
+
+## 过滤、排序与限制
+
+过滤和排序通过 GraphQL input object 表达。第一阶段只实现明确白名单字段，不暴露任意字段名查询。
+
+建筑过滤示例：
+
+```graphql
+input BuildingWhere {
+  id: ID
+  planetId: PlanetSelector
+  kindIn: [BuildingKind!]
+  withinRadius: RadiusFilter
+  withinBBox: BBoxFilter
+}
+```
+
+任务过滤示例：
+
+```graphql
+input TaskWhere {
+  id: ID
+  clientRequestId: String
+  type: TaskType
+  statusIn: [TaskStatus!]
+}
+```
+
+选择白名单 input object 的原因：
+
+- Schema 自带校验和自省能力。
+- 不需要实现任意表达式解析器。
+- 可以显式限制昂贵查询。
+- 更容易为 AI Agent 生成稳定工具描述。
+
+## 任务队列
+
+### 单队列约束
+
+系统只维护一个内部任务队列。所有任务按提交顺序进入同一个队列，命令执行器一次只推进一个任务。
+
+这样做的原因：
+
+- 游戏内建造行为与玩家位置强相关。
+- 伊卡洛斯同一时间只能执行一个空间动作。
+- 并行任务容易互相改变地形、库存、供电和建筑占位。
+
+### 对外查询方式
+
+队列不是实体。查询队列中的任务：
+
+```graphql
+query Queue {
+  snapshot {
+    tasks(where: { type: QUEUE }, orderBy: { field: QUEUE_INDEX, direction: ASC }) {
+      id
+      status
+      queueIndex
+    }
+  }
+}
+```
 
 ### 任务持久性
 
@@ -218,9 +336,9 @@ GET /health
 
 取消不是强制打断任意游戏内部调用，而是请求命令执行器尽快进入安全停止状态。
 
-- `queued`：直接标记为 `cancelled`。
-- `running`：标记为 `cancel_requested`，当前原子命令结束后转为 `cancelled`。
-- `succeeded` / `failed` / `cancelled`：保持原状态。
+- `QUEUED`：直接标记为 `CANCELLED`。
+- `RUNNING`：标记为 `CANCEL_REQUESTED`，当前原子命令结束后转为 `CANCELLED`。
+- `SUCCEEDED` / `FAILED` / `CANCELLED`：保持原状态。
 
 ## 命令执行
 
@@ -228,16 +346,16 @@ GET /health
 
 命令状态：
 
-- `pending`
-- `running`
-- `succeeded`
-- `failed`
-- `skipped`
+- `PENDING`
+- `RUNNING`
+- `SUCCEEDED`
+- `FAILED`
+- `SKIPPED`
 
 任务失败策略：
 
 - 默认 `stopOnFailure = true`。
-- 命令失败后，任务标记为 `failed`，后续命令不执行。
+- 命令失败后，任务标记为 `FAILED`，后续命令不执行。
 - 失败结果保留错误码、错误消息、命令 ID 和快照 tick。
 
 ### 原子命令
@@ -256,22 +374,22 @@ GET /health
 
 ## 游戏状态快照
 
-快照应包含 Query DSL 可访问的实体数据。快照对象一旦生成，不再修改。
+快照应包含 GraphQL 可访问的实体数据。快照对象一旦生成，不再修改。
 
 第一阶段建议先实现增量较低的全量当前行星快照，再按性能瓶颈优化空间索引。
 
 快照字段建议：
 
-- `snapshotTick`
+- `tick`
 - `gameTick`
 - `currentPlanetId`
 - `player`
-- `inventorySummary`
-- `technologySummary`
+- `inventory`
+- `technology`
 - `entities`
-- `taskQueue`
+- `tasks`
 
-对于建筑、矿脉等数量较多的实体，Query DSL 必须要求 `limit`，并优先支持空间过滤。
+对于建筑、矿脉等数量较多的实体，resolver 必须支持 `limit`，并优先支持空间过滤。
 
 ## 安全与访问控制
 
@@ -295,47 +413,48 @@ GET /health
 验证：
 
 - 仓库结构清晰。
-- 工程文件能定位 DSP 游戏程序集。
-- 未安装 BepInEx 时有明确构建错误。
+- 工程文件能定位 DSP 游戏程序集和 BepInEx 程序集。
 
-### 阶段 1：只读 Query DSL
+### 阶段 1：只读 GraphQL snapshot
 
 交付：
 
-- `POST /query`。
-- 基础实体：`player`、`inventory`、`technology`、`planet`、`building`、`vein`、`task_queue`、`task`。
+- `POST /graphql`。
+- `snapshot` 查询根。
+- 基础实体：`player`、`inventory`、`technology`、`planet`、`building`、`vein`、`task`。
 
 验证：
 
-- 能查询玩家位置。
+- 能在同一 `snapshot.tick` 下查询玩家位置和背包。
 - 能查询当前行星附近建筑。
-- 能查询空任务队列状态。
+- 能通过 `tasks(where: { type: QUEUE })` 查询空队列。
 
-### 阶段 2：任务队列
+### 阶段 2：任务 mutation 与内部队列
 
 交付：
 
-- `POST /tasks`。
-- `POST /tasks/{taskId}/cancel`。
-- 任务和命令状态实体。
-- `wait_until` 和内部 no-op 测试命令。
+- `enqueueTask`。
+- `cancelTask`。
+- `Task.commands` 状态输出。
+- `waitUntil` 和内部 no-op 测试命令。
 
 验证：
 
 - 多任务按顺序执行。
-- queued 任务可取消。
-- running 任务可安全取消。
+- `QUEUED` 任务可取消。
+- `RUNNING` 任务可安全取消。
+- 命令状态只能通过 `Task.commands` 获取。
 
 ### 阶段 3：行星内建造命令
 
 交付：
 
-- `move_to`
-- `craft_inventory`
-- `place_building`
-- `place_belt`
-- `place_sorter`
-- `set_recipe`
+- `moveTo`
+- `craftInventory`
+- `placeBuilding`
+- `placeBelt`
+- `placeSorter`
+- `setRecipe`
 
 验证：
 
@@ -348,12 +467,14 @@ GET /health
 
 - DSP 内部类和字段随版本变化。
 - 建造流程可能依赖 UI 状态或游戏内部工具状态。
-- Unity 主线程和外部接口线程之间需要严格隔离。
+- Unity 主线程和 GraphQL 服务线程之间需要严格隔离。
 - 大型行星状态查询可能产生性能压力。
+- GraphQL 库在 BepInEx 5 / Unity Mono 环境中的依赖兼容性需要验证。
 
 缓解策略：
 
 - 把游戏内部访问集中到 Adapter 层。
-- Query DSL 默认要求投影和 limit。
+- GraphQL schema 只暴露稳定 DTO，不暴露 DSP 内部类。
+- 列表 resolver 默认要求 `limit` 或施加服务端上限。
 - 第一阶段只支持当前行星。
 - 优先使用游戏原生建造流程，避免直接改底层数组。
