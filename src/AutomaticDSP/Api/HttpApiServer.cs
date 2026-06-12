@@ -16,6 +16,7 @@ namespace AutomaticDSP.Api
     internal sealed class HttpApiServer : IDisposable
     {
         private readonly HistoryStore historyStore;
+        private readonly string host;
         private readonly ManualLogSource log;
         private readonly int port;
         private readonly StateSnapshotService snapshotService;
@@ -30,12 +31,14 @@ namespace AutomaticDSP.Api
         };
 
         public HttpApiServer(
+            string host,
             int port,
             StateSnapshotService snapshotService,
             TaskStateStore taskStateStore,
             HistoryStore historyStore,
             ManualLogSource log)
         {
+            this.host = string.IsNullOrWhiteSpace(host) ? "127.0.0.1" : host.Trim();
             this.port = port;
             this.snapshotService = snapshotService;
             this.taskStateStore = taskStateStore;
@@ -52,10 +55,10 @@ namespace AutomaticDSP.Api
 
             cancellation = new CancellationTokenSource();
             listener = new HttpListener();
-            listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+            listener.Prefixes.Add($"http://{PrefixHost(this.host)}:{port}/");
             listener.Start();
             listenTask = Task.Run(() => ListenLoop(cancellation.Token));
-            log.LogInfo($"AutomaticDSP HTTP API listening on http://127.0.0.1:{port}/");
+            log.LogInfo($"AutomaticDSP HTTP API listening on http://{DisplayHost(this.host)}:{port}/");
         }
 
         public void Dispose()
@@ -110,7 +113,7 @@ namespace AutomaticDSP.Api
                     var snapshot = snapshotService.GetLatestSnapshot();
                     if (snapshot == null)
                     {
-                        WriteJson(context, 503, Error("state_unavailable", "State snapshot is not available yet."));
+                        WriteJson(context, 503, Error("state_unavailable", "State snapshot is not available. Load a save or start a game first."));
                     }
                     else
                     {
@@ -147,6 +150,21 @@ namespace AutomaticDSP.Api
                     ["message"] = message
                 }
             };
+        }
+
+        private static string DisplayHost(string value)
+        {
+            return IsAnyHost(value) ? "0.0.0.0" : value;
+        }
+
+        private static bool IsAnyHost(string value)
+        {
+            return value == "0.0.0.0" || value == "*" || value == "+";
+        }
+
+        private static string PrefixHost(string value)
+        {
+            return IsAnyHost(value) ? "*" : value;
         }
 
         private void WriteJson(HttpListenerContext context, int statusCode, object payload)

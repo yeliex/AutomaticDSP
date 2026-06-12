@@ -16,6 +16,8 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 - 运行时数据和快照统一输出到 `BepInEx/cache/AutomaticDSP`。
 - 暂不实现 GraphQL，先用 REST/JSON 跑通可观测性。
 - HTTP 服务使用 .NET 内置 `HttpListener`，JSON 序列化使用 `Newtonsoft.Json`。
+- HTTP 默认监听 `127.0.0.1:39270`，其中 `HTTP.Host` 和 `HTTP.Port` 都是配置项；需要外部访问时可以把 `HTTP.Host` 改成 `0.0.0.0`。
+- 未加载存档或未开始对局时不生成状态快照，`GET /state` 返回明确的不可用状态。
 
 采样间隔参考：
 
@@ -259,6 +261,7 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 交付：
 
 - 配置项：端口、快照间隔 tick、是否启用 HTTP。
+- 配置项：HTTP host 默认 `127.0.0.1`，HTTP port 默认 `39270`。
 - `StateSnapshot` DTO。
 - `StateSnapshotService`。
 - 主线程 60 tick 采样。

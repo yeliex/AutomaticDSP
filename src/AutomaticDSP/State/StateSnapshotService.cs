@@ -24,6 +24,8 @@ namespace AutomaticDSP.State
         private readonly string snapshotDirectory;
         private long lastCaptureGameTick = -1;
         private long nextSnapshotId = 1;
+        private bool inactiveLogged;
+        private bool inactiveSnapshotFileChecked;
         private bool latestGameLoaded;
         private StateSnapshot latestSnapshot;
 
@@ -55,16 +57,13 @@ namespace AutomaticDSP.State
 
         public void Update()
         {
-            long gameTick;
-            try
+            if (!IsGameSessionLoaded())
             {
-                gameTick = GameMain.gameTick;
-            }
-            catch
-            {
-                gameTick = 0;
+                MarkSessionUnavailable();
+                return;
             }
 
+            var gameTick = GameMain.gameTick;
             if (latestSnapshot != null && gameTick >= lastCaptureGameTick &&
                 gameTick - lastCaptureGameTick < snapshotIntervalTicks)
             {
@@ -101,6 +100,8 @@ namespace AutomaticDSP.State
                 latestGameLoaded = Convert.ToBoolean(metadata["gameLoaded"]);
                 latestSnapshot = snapshot;
                 lastCaptureGameTick = gameTick;
+                inactiveLogged = false;
+                inactiveSnapshotFileChecked = false;
                 WriteLatestSnapshot(snapshot);
 
                 if (snapshot.Id == 1 || snapshot.Id % 60 == 0)
@@ -111,6 +112,25 @@ namespace AutomaticDSP.State
             catch (Exception ex)
             {
                 log.LogWarning($"State snapshot capture failed: {ex}");
+            }
+        }
+
+        private void MarkSessionUnavailable()
+        {
+            latestGameLoaded = false;
+            latestSnapshot = null;
+            lastCaptureGameTick = -1;
+
+            if (!inactiveSnapshotFileChecked)
+            {
+                DeleteLatestSnapshot();
+                inactiveSnapshotFileChecked = true;
+            }
+
+            if (!inactiveLogged)
+            {
+                log.LogInfo("AutomaticDSP state snapshot is waiting for a loaded game session.");
+                inactiveLogged = true;
             }
         }
 
@@ -134,6 +154,28 @@ namespace AutomaticDSP.State
             catch (Exception ex)
             {
                 log.LogWarning($"Failed to write latest state snapshot: {ex.Message}");
+            }
+        }
+
+        private void DeleteLatestSnapshot()
+        {
+            try
+            {
+                var snapshotPath = Path.Combine(snapshotDirectory, "latest.json");
+                var tempPath = snapshotPath + ".tmp";
+                if (File.Exists(tempPath))
+                {
+                    File.Delete(tempPath);
+                }
+
+                if (File.Exists(snapshotPath))
+                {
+                    File.Delete(snapshotPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                log.LogWarning($"Failed to delete stale state snapshot: {ex.Message}");
             }
         }
 
@@ -583,7 +625,23 @@ namespace AutomaticDSP.State
 
         private static bool IsGameLoaded()
         {
-            return GameMain.data != null && GameMain.mainPlayer != null;
+            return IsGameSessionLoaded();
+        }
+
+        private static bool IsGameSessionLoaded()
+        {
+            try
+            {
+                return GameMain.data != null &&
+                       GameMain.mainPlayer != null &&
+                       GameMain.history != null &&
+                       GameMain.statistics != null &&
+                       GameMain.gameTick > 0;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private static JsonObject ItemSummary(Dictionary<int, int> items)
