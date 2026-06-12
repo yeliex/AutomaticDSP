@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <AssemblyName>AutomaticDSP</AssemblyName>
+    <RootNamespace>AutomaticDSP</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <DSPGameDir Condition="'$(DSPGameDir)' == ''">C:\Program Files (x86)\Steam\steamapps\common\Dyson Sphere Program</DSPGameDir>
+    <DSPManagedDir Condition="'$(DSPManagedDir)' == ''">$(DSPGameDir)\DSPGAME_Data\Managed</DSPManagedDir>
+    <BepInExCoreDir Condition="'$(BepInExCoreDir)' == ''">$(DSPGameDir)\BepInEx\core</BepInExCoreDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="BepInEx" HintPath="$(BepInExCoreDir)\BepInEx.dll" Private="false" />
+    <Reference Include="Assembly-CSharp" HintPath="$(DSPManagedDir)\Assembly-CSharp.dll" Private="false" />
+    <Reference Include="UnityEngine" HintPath="$(DSPManagedDir)\UnityEngine.dll" Private="false" />
+    <Reference Include="UnityEngine.CoreModule" HintPath="$(DSPManagedDir)\UnityEngine.CoreModule.dll" Private="false" />
+  </ItemGroup>
+
+  <Target Name="ValidateGameReferences" BeforeTargets="ResolveReferences">
+    <Error Condition="!Exists('$(DSPManagedDir)\Assembly-CSharp.dll')" Text="Cannot find DSP game assemblies. Set DSPGameDir or DSPManagedDir to your Dyson Sphere Program installation." />
+    <Error Condition="!Exists('$(BepInExCoreDir)\BepInEx.dll')" Text="Cannot find BepInEx core assemblies. Install BepInEx into Dyson Sphere Program or set BepInExCoreDir." />
+  </Target>
+</Project>
