@@ -2,8 +2,11 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
+using System.Text;
 using AutomaticDSP.Serialization;
 using BepInEx.Logging;
+using Newtonsoft.Json;
 using UnityEngine;
 
 namespace AutomaticDSP.State
@@ -14,14 +17,20 @@ namespace AutomaticDSP.State
         private const float NearbyBuildingRadius = 160f;
         private readonly ManualLogSource log;
         private readonly int snapshotIntervalTicks;
+        private readonly JsonSerializerSettings jsonSettings = new JsonSerializerSettings
+        {
+            NullValueHandling = NullValueHandling.Include
+        };
+        private readonly string snapshotDirectory;
         private long lastCaptureGameTick = -1;
         private long nextSnapshotId = 1;
         private bool latestGameLoaded;
         private StateSnapshot latestSnapshot;
 
-        public StateSnapshotService(int snapshotIntervalTicks, ManualLogSource log)
+        public StateSnapshotService(int snapshotIntervalTicks, string cacheRootPath, ManualLogSource log)
         {
             this.snapshotIntervalTicks = Math.Max(1, snapshotIntervalTicks);
+            snapshotDirectory = Path.Combine(cacheRootPath, "snapshots");
             this.log = log;
         }
 
@@ -92,6 +101,7 @@ namespace AutomaticDSP.State
                 latestGameLoaded = Convert.ToBoolean(metadata["gameLoaded"]);
                 latestSnapshot = snapshot;
                 lastCaptureGameTick = gameTick;
+                WriteLatestSnapshot(snapshot);
 
                 if (snapshot.Id == 1 || snapshot.Id % 60 == 0)
                 {
@@ -101,6 +111,29 @@ namespace AutomaticDSP.State
             catch (Exception ex)
             {
                 log.LogWarning($"State snapshot capture failed: {ex}");
+            }
+        }
+
+        private void WriteLatestSnapshot(StateSnapshot snapshot)
+        {
+            try
+            {
+                Directory.CreateDirectory(snapshotDirectory);
+                var snapshotPath = Path.Combine(snapshotDirectory, "latest.json");
+                var tempPath = snapshotPath + ".tmp";
+                var json = JsonConvert.SerializeObject(snapshot.Data, Formatting.None, jsonSettings);
+                File.WriteAllText(tempPath, json, Encoding.UTF8);
+
+                if (File.Exists(snapshotPath))
+                {
+                    File.Delete(snapshotPath);
+                }
+
+                File.Move(tempPath, snapshotPath);
+            }
+            catch (Exception ex)
+            {
+                log.LogWarning($"Failed to write latest state snapshot: {ex.Message}");
             }
         }
 

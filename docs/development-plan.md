@@ -13,6 +13,7 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 - 任务状态不放进状态查询。
 - `GET /tasks` 查询内存中的待执行或执行中任务。
 - `GET /history` 查询 SQLite 中已完成、失败或取消的历史命令。
+- 运行时数据和快照统一输出到 `BepInEx/cache/AutomaticDSP`。
 - 暂不实现 GraphQL，先用 REST/JSON 跑通可观测性。
 - HTTP 服务使用 .NET 内置 `HttpListener`，JSON 序列化使用 `Newtonsoft.Json`。
 
@@ -265,7 +266,8 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 - `GET /state`。
 - `GET /tasks` 空实现。
 - `GET /history` 空实现。
-- SQLite 初始化和历史表结构，数据库位于 `BepInEx/config/AutomaticDSP/history.sqlite`。
+- SQLite 初始化和历史表结构，数据库位于 `BepInEx/cache/AutomaticDSP/data/history.sqlite`。
+- 最新状态快照写入 `BepInEx/cache/AutomaticDSP/snapshots/latest.json`。
 
 验证：
 
@@ -377,6 +379,7 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 - 默认只监听 `127.0.0.1`。
 - 默认端口 `39270`。
 - SQLite 只存历史命令，不存完整游戏快照。
+- 最新 JSON 快照写入 `BepInEx/cache/AutomaticDSP/snapshots/latest.json`，用于调试和外部观测。
 
 ## 待确认问题
 

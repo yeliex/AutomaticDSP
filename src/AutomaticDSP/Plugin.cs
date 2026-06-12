@@ -1,6 +1,7 @@
 using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
+using System.IO;
 using AutomaticDSP.Api;
 using AutomaticDSP.State;
 using AutomaticDSP.Storage;
@@ -32,11 +33,12 @@ namespace AutomaticDSP
             httpPort = Config.Bind("HTTP", "Port", 39270, "Local HTTP API port.");
             snapshotIntervalTicks = Config.Bind("State", "SnapshotIntervalTicks", 60, "Game ticks between state snapshots.");
 
-            historyStore = new HistoryStore(Paths.ConfigPath, Logger);
+            var cacheRoot = Path.Combine(Paths.CachePath, PluginName);
+            historyStore = new HistoryStore(cacheRoot, Logger);
             historyStore.Initialize();
 
             taskStateStore = new TaskStateStore();
-            snapshotService = new StateSnapshotService(snapshotIntervalTicks.Value, Logger);
+            snapshotService = new StateSnapshotService(snapshotIntervalTicks.Value, cacheRoot, Logger);
 
             if (httpEnabled.Value)
             {

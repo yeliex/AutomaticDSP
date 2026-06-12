@@ -1,6 +1,7 @@
 # AutomaticDSP 需求说明
 
 > 当前 M1 实现以 `docs/development-plan.md` 为准：先提供本地 REST/JSON 只读观测接口，`GET /state` 读取快照，`GET /tasks` 与 `GET /history` 独立返回任务和历史。本文中 GraphQL 与任务执行描述保留为后续阶段目标草案。
+> M1 运行时数据和最新快照统一输出到 `BepInEx/cache/AutomaticDSP`。
 
 ## 背景
 

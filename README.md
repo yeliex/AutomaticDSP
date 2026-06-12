@@ -22,6 +22,11 @@ http://127.0.0.1:39270/
 - `GET /tasks`
 - `GET /history`
 
+运行时数据输出到：
+
+- `BepInEx/cache/AutomaticDSP/data/history.sqlite`
+- `BepInEx/cache/AutomaticDSP/snapshots/latest.json`
+
 默认游戏目录：
 
 ```text

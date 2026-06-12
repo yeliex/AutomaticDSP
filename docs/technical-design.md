@@ -1,6 +1,7 @@
 # AutomaticDSP 技术方案
 
 > 当前 M1 实现以 `docs/development-plan.md` 为准：HTTP 使用 .NET 内置 `HttpListener`，JSON 使用 `Newtonsoft.Json`，先实现 `/health`、`/state`、`/tasks`、`/history`。本文中 GraphQL schema 保留为后续查询增强候选，不是 M1 交付范围。
+> M1 运行时数据和最新快照统一写入 `BepInEx/cache/AutomaticDSP`。
 
 ## 总体架构
 

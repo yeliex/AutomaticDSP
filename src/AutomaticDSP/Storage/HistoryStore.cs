@@ -1,10 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Data.SQLite;
 using System.IO;
 using AutomaticDSP.Serialization;
 using BepInEx.Logging;
-using Microsoft.Data.Sqlite;
-using SQLitePCL;
 
 namespace AutomaticDSP.Storage
 {
@@ -13,16 +12,15 @@ namespace AutomaticDSP.Storage
         private readonly string databasePath;
         private readonly ManualLogSource log;
 
-        public HistoryStore(string configPath, ManualLogSource log)
+        public HistoryStore(string cacheRootPath, ManualLogSource log)
         {
             this.log = log;
-            databasePath = Path.Combine(configPath, "AutomaticDSP", "history.sqlite");
+            databasePath = Path.Combine(cacheRootPath, "data", "history.sqlite");
         }
 
         public void Initialize()
         {
             Directory.CreateDirectory(Path.GetDirectoryName(databasePath));
-            Batteries_V2.Init();
 
             using (var connection = OpenConnection())
             using (var command = connection.CreateCommand())
@@ -91,14 +89,14 @@ namespace AutomaticDSP.Storage
         {
         }
 
-        private SqliteConnection OpenConnection()
+        private SQLiteConnection OpenConnection()
         {
-            var connection = new SqliteConnection($"Data Source={databasePath}");
+            var connection = new SQLiteConnection($"Data Source={databasePath};Version=3;");
             connection.Open();
             return connection;
         }
 
-        private static string NullableString(SqliteDataReader reader, int ordinal)
+        private static string NullableString(SQLiteDataReader reader, int ordinal)
         {
             return reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);
         }
