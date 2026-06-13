@@ -187,6 +187,11 @@ namespace AutomaticDSP.Api
                 WriteJson(context, 400, Error("graphql_parse_error", ex.Message));
                 return;
             }
+            catch (StateQueryParseException ex)
+            {
+                WriteJson(context, 400, Error("graphql_parse_error", ex.Message));
+                return;
+            }
 
             try
             {

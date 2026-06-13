@@ -12,8 +12,18 @@ namespace AutomaticDSP.State
             var document = Parser.Parse(query, new ParserOptions { Ignore = IgnoreOptions.All });
             var fragments = CollectFragments(document);
             var operation = FindOperation(document, operationName);
+            if (operation == null)
+            {
+                throw new StateQueryParseException("Request must include a GraphQL query operation.");
+            }
+
+            if (operation.Operation != OperationType.Query)
+            {
+                throw new StateQueryParseException("Only GraphQL query operations are supported by /state.");
+            }
+
             var plan = new StateQueryPlan();
-            AddSelections(plan.Fields, operation?.SelectionSet, fragments, new HashSet<string>());
+            AddSelections(plan.Fields, operation.SelectionSet, fragments, new HashSet<string>());
             return plan;
         }
 
