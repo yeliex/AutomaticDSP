@@ -224,6 +224,7 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 ### GET /health
 
 返回 Mod 与快照服务状态。
+当 `/state` 不可用时，`sessionGate` 会给出当前被拦截的原因，方便区分主菜单、加载中、菜单演示或真实对局字段缺失。
 
 ```json
 {
@@ -232,7 +233,11 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
   "hasState": true,
   "latestSnapshotId": 12,
   "latestGameTick": 123456,
-  "snapshotIntervalTicks": 60
+  "snapshotIntervalTicks": 60,
+  "sessionGate": {
+    "loaded": true,
+    "reason": null
+  }
 }
 ```
 

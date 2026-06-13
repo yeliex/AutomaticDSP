@@ -29,6 +29,7 @@ namespace AutomaticDSP.State
         private long nextSnapshotId = 1;
         private bool inactiveLogged;
         private bool inactiveSnapshotFileChecked;
+        private string inactiveReasonLogged;
         private bool latestGameLoaded;
         private StateSnapshot latestSnapshot;
 
@@ -56,7 +57,8 @@ namespace AutomaticDSP.State
                 ["hasState"] = snapshot != null,
                 ["latestSnapshotId"] = snapshot?.Id,
                 ["latestGameTick"] = snapshot?.GameTick,
-                ["snapshotIntervalTicks"] = snapshotIntervalTicks
+                ["snapshotIntervalTicks"] = snapshotIntervalTicks,
+                ["sessionGate"] = CaptureSessionGate()
             };
         }
 
@@ -136,10 +138,12 @@ namespace AutomaticDSP.State
                 inactiveSnapshotFileChecked = true;
             }
 
-            if (!inactiveLogged)
+            var reason = GetSessionUnavailableReason();
+            if (!inactiveLogged || inactiveReasonLogged != reason)
             {
-                log.LogInfo("AutomaticDSP state snapshot is waiting for a loaded game session.");
+                log.LogInfo($"AutomaticDSP state snapshot is waiting for a loaded game session: {reason}.");
                 inactiveLogged = true;
+                inactiveReasonLogged = reason;
             }
         }
 
@@ -293,7 +297,8 @@ namespace AutomaticDSP.State
                     ["loadErrored"] = GameMain.loadErrored,
                     ["inOtherScene"] = GameMain.inOtherScene,
                     ["isMenuDemo"] = DSPGame.IsMenuDemo,
-                    ["menuDemoLoaded"] = DSPGame.MenuDemoLoaded
+                    ["menuDemoLoaded"] = DSPGame.MenuDemoLoaded,
+                    ["gameMainIsMenuDemo"] = IsGameMainMenuDemo()
                 },
                 ["location"] = new JsonObject
                 {
@@ -344,6 +349,33 @@ namespace AutomaticDSP.State
                 ["gameMainInstance"] = instance == null ? null : CaptureMembers(instance, typeof(GameMain), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance, 160),
                 ["gameData"] = data == null ? null : CaptureMembers(data, typeof(GameData), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance, 180),
                 ["dspGameStatic"] = CaptureMembers(null, typeof(DSPGame), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static, 120)
+            };
+        }
+
+        private static JsonObject CaptureSessionGate()
+        {
+            var reason = GetSessionUnavailableReason();
+            return new JsonObject
+            {
+                ["loaded"] = reason == null,
+                ["reason"] = reason,
+                ["gameMainData"] = SafeGet(() => GameMain.data) != null,
+                ["gameMainNotNull"] = SafeGet(() => GameMain.notNull),
+                ["gameMainRunning"] = SafeGet(() => GameMain.isRunning),
+                ["gameMainLoading"] = SafeGet(() => GameMain.isLoading),
+                ["gameMainEnded"] = SafeGet(() => GameMain.isEnded),
+                ["gameMainLoadErrored"] = SafeGet(() => GameMain.loadErrored),
+                ["gameMainInOtherScene"] = SafeGet(() => GameMain.inOtherScene),
+                ["dspGameIsMenuDemo"] = SafeGet(() => DSPGame.IsMenuDemo),
+                ["dspGameMenuDemoLoaded"] = SafeGet(() => DSPGame.MenuDemoLoaded),
+                ["gameMainIsMenuDemo"] = IsGameMainMenuDemo(),
+                ["mainPlayer"] = SafeGet(() => GameMain.mainPlayer) != null,
+                ["history"] = SafeGet(() => GameMain.history) != null,
+                ["statistics"] = SafeGet(() => GameMain.statistics) != null,
+                ["galaxy"] = SafeGet(() => GameMain.galaxy) != null,
+                ["gameTick"] = SafeGet(() => GameMain.gameTick),
+                ["gameTime"] = SafeGet(() => GameMain.gameTime),
+                ["gameName"] = SafeGet(() => GameMain.gameName)
             };
         }
 
@@ -968,27 +1000,80 @@ namespace AutomaticDSP.State
 
         private static bool IsGameSessionLoaded()
         {
+            return GetSessionUnavailableReason() == null;
+        }
+
+        private static string GetSessionUnavailableReason()
+        {
             try
             {
-                return GameMain.data != null &&
-                       GameMain.notNull &&
-                       GameMain.isRunning &&
-                       !GameMain.isLoading &&
-                       !GameMain.isEnded &&
-                       !GameMain.loadErrored &&
-                       !GameMain.inOtherScene &&
-                       !DSPGame.IsMenuDemo &&
-                       !DSPGame.MenuDemoLoaded &&
-                       GameMain.mainPlayer != null &&
-                       GameMain.history != null &&
-                       GameMain.statistics != null &&
-                       GameMain.galaxy != null &&
-                       GameMain.gameTick > 0;
+                if (GameMain.data == null)
+                {
+                    return "game_data_missing";
+                }
+
+                if (!GameMain.notNull)
+                {
+                    return "game_main_null";
+                }
+
+                if (GameMain.isLoading)
+                {
+                    return "game_loading";
+                }
+
+                if (GameMain.isEnded)
+                {
+                    return "game_ended";
+                }
+
+                if (GameMain.loadErrored)
+                {
+                    return "game_load_errored";
+                }
+
+                if (GameMain.inOtherScene)
+                {
+                    return "game_in_other_scene";
+                }
+
+                if (DSPGame.IsMenuDemo || IsGameMainMenuDemo())
+                {
+                    return "menu_demo";
+                }
+
+                if (GameMain.mainPlayer == null)
+                {
+                    return "main_player_missing";
+                }
+
+                if (GameMain.history == null)
+                {
+                    return "history_missing";
+                }
+
+                if (GameMain.statistics == null)
+                {
+                    return "statistics_missing";
+                }
+
+                if (GameMain.galaxy == null)
+                {
+                    return "galaxy_missing";
+                }
+
+                return null;
             }
-            catch
+            catch (Exception ex)
             {
-                return false;
+                return "exception_" + ex.GetType().Name;
             }
+        }
+
+        private static bool IsGameMainMenuDemo()
+        {
+            var instance = SafeGet(() => GameMain.instance);
+            return ReflectionReader.GetBool(instance, false, "isMenuDemo");
         }
 
         private static JsonObject ItemSummary(Dictionary<int, int> items)
