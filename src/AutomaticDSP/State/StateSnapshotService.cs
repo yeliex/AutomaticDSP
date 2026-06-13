@@ -47,11 +47,7 @@ namespace AutomaticDSP.State
             staleDiagnosticsDirectory = Path.Combine(cacheRootPath, "diagnostics");
             snapshotDirectory = Path.Combine(cacheRootPath, "snapshots");
             this.log = log;
-            latestGameStatus = new JsonObject
-            {
-                ["ready"] = false,
-                ["status"] = "unknown"
-            };
+            latestGameStatus = CaptureGameStatus();
             ClearPersistedSnapshots();
         }
 
@@ -644,54 +640,73 @@ namespace AutomaticDSP.State
 
         private static string GetGameStatusValue()
         {
+            if (SafeBool(() => GameMain.loadErrored))
+            {
+                return "error";
+            }
+
+            if (SafeBool(() => GameMain.isLoading))
+            {
+                return "loading";
+            }
+
+            var data = SafeValue(() => GameMain.data);
+            if (data == null || SafeBool(() => DSPGame.IsMenuDemo) || IsGameMainMenuDemo())
+            {
+                return "menu";
+            }
+
+            if (SafeBool(() => GameMain.isEnded))
+            {
+                return "ended";
+            }
+
+            if (SafeBool(() => DSPGame.IsCombatCutscene))
+            {
+                return "cutscene";
+            }
+
+            if (MemberBool(data, false, "guideRunning") && !MemberBool(data, false, "guideComplete"))
+            {
+                return "prologue";
+            }
+
+            if (SafeBool(() => GameMain.isPaused) ||
+                SafeBool(() => GameMain.isFullscreenPaused) ||
+                SafeBool(() => GameMain.inOtherScene))
+            {
+                return "paused";
+            }
+
+            if (SafeBool(() => GameMain.isRunning))
+            {
+                return "running";
+            }
+
+            return "unknown";
+        }
+
+        private static bool SafeBool(Func<bool> read)
+        {
             try
             {
-                if (GameMain.loadErrored)
-                {
-                    return "error";
-                }
-
-                if (GameMain.isLoading)
-                {
-                    return "loading";
-                }
-
-                var data = GameMain.data;
-                if (data == null || DSPGame.IsMenuDemo || IsGameMainMenuDemo())
-                {
-                    return "menu";
-                }
-
-                if (GameMain.isEnded)
-                {
-                    return "ended";
-                }
-
-                if (DSPGame.IsCombatCutscene)
-                {
-                    return "cutscene";
-                }
-
-                if (MemberBool(data, false, "guideRunning") && !MemberBool(data, false, "guideComplete"))
-                {
-                    return "prologue";
-                }
-
-                if (GameMain.isPaused || GameMain.isFullscreenPaused || GameMain.inOtherScene)
-                {
-                    return "paused";
-                }
-
-                if (GameMain.isRunning)
-                {
-                    return "running";
-                }
-
-                return "unknown";
+                return read();
             }
             catch
             {
-                return "unknown";
+                return false;
+            }
+        }
+
+        private static object SafeValue(Func<object> read)
+        {
+            try
+            {
+                return read();
+            }
+            catch
+            {
+                return null;
             }
         }
 
