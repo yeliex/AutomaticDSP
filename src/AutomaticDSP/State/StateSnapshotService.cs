@@ -1,19 +1,21 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Reflection;
-using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using AutomaticDSP.Serialization;
 using BepInEx.Logging;
-using Newtonsoft.Json;
 using UnityEngine;
 
 namespace AutomaticDSP.State
 {
     internal sealed class StateSnapshotService
     {
+        private const int DefaultQueryListLimit = 256;
+        private const int MaxQueryListLimit = 2048;
+        private const int MaxQueryDepth = 16;
         private const int SpaceObjectSampleLimit = 128;
         private static readonly string[] SnapshotFileNames =
         {
@@ -27,22 +29,16 @@ namespace AutomaticDSP.State
 
         private readonly ManualLogSource log;
         private readonly int snapshotIntervalTicks;
-        private readonly JsonSerializerSettings jsonSettings = new JsonSerializerSettings
-        {
-            NullValueHandling = NullValueHandling.Include
-        };
+        private readonly object queryLock = new object();
+        private readonly List<PendingStateQuery> pendingStateQueries = new List<PendingStateQuery>();
         private readonly string staleDumpDirectory;
         private readonly string staleDiagnosticsDirectory;
         private readonly string snapshotDirectory;
-        private long lastCaptureGameTick = -1;
-        private long nextSnapshotId = 1;
+        private long lastQueryDispatchGameTick = -1;
         private bool inactiveLogged;
         private bool inactiveSnapshotFileChecked;
         private string inactiveReasonLogged;
-        private bool latestGameLoaded;
-        private JsonObject latestSessionGate;
-        private StateSnapshot latestSnapshot;
-        private JsonObject latestLocalPlanetFactories;
+        private JsonObject latestGameStatus;
 
         public StateSnapshotService(int snapshotIntervalTicks, string cacheRootPath, ManualLogSource log)
         {
@@ -51,196 +47,150 @@ namespace AutomaticDSP.State
             staleDiagnosticsDirectory = Path.Combine(cacheRootPath, "diagnostics");
             snapshotDirectory = Path.Combine(cacheRootPath, "snapshots");
             this.log = log;
-            latestSessionGate = SessionGate("not_observed");
+            latestGameStatus = new JsonObject
+            {
+                ["ready"] = false,
+                ["status"] = "unknown"
+            };
             ClearPersistedSnapshots();
         }
 
-        public StateSnapshot GetLatestSnapshot()
+        public JsonObject GetGameStatus()
         {
-            return latestSnapshot;
+            return latestGameStatus;
         }
 
-        public JsonObject GetHealth()
+        public bool IsStateQueryReady(out string status)
         {
-            var snapshot = latestSnapshot;
-            return new JsonObject
-            {
-                ["status"] = "ok",
-                ["gameLoaded"] = latestGameLoaded,
-                ["hasState"] = snapshot != null,
-                ["latestSnapshotId"] = snapshot?.Id,
-                ["latestGameTick"] = snapshot?.GameTick,
-                ["snapshotIntervalTicks"] = snapshotIntervalTicks,
-                ["sessionGate"] = latestSessionGate
-            };
+            var gameStatus = latestGameStatus;
+            status = JsonString(gameStatus, "status", "unknown");
+            return JsonBool(gameStatus, "ready", false);
         }
 
-        public JsonObject GetLocalPlanetFactories(
-            string status,
-            int? protoId,
-            int startId,
-            int limit,
-            double? x,
-            double? y,
-            double? z,
-            double? radius)
+        public Task<JsonObject> EnqueueStateQuery(StateQueryPlan plan, CancellationToken cancellationToken)
         {
-            var source = latestLocalPlanetFactories;
-            if (source == null)
+            var pending = new PendingStateQuery(plan);
+            if (cancellationToken.CanBeCanceled)
             {
-                return null;
+                pending.Cancellation = cancellationToken.Register(() => CancelPendingStateQuery(pending));
             }
 
-            var normalizedLimit = Math.Max(1, Math.Min(limit <= 0 ? 100 : limit, 500));
-            var result = new List<object>();
-            var matchedCount = 0;
-            var lastEntityId = 0;
-            var items = source["items"] as IEnumerable;
-
-            if (items != null)
+            lock (queryLock)
             {
-                foreach (var rawItem in items)
+                if (!pending.Completion.Task.IsCompleted)
                 {
-                    var item = rawItem as JsonObject;
-                    if (item == null)
-                    {
-                        continue;
-                    }
-
-                    var entityId = JsonInt(item, "entityId", 0);
-                    if (startId > 0 && entityId < startId)
-                    {
-                        continue;
-                    }
-
-                    if (protoId.HasValue && JsonInt(item, "protoId", 0) != protoId.Value)
-                    {
-                        continue;
-                    }
-
-                    if (!string.IsNullOrWhiteSpace(status) && !EntityHasStatus(item, status))
-                    {
-                        continue;
-                    }
-
-                    if (!EntityInRadius(item, x, y, z, radius))
-                    {
-                        continue;
-                    }
-
-                    matchedCount++;
-                    if (result.Count < normalizedLimit)
-                    {
-                        result.Add(item);
-                        lastEntityId = entityId;
-                    }
+                    pendingStateQueries.Add(pending);
                 }
             }
 
-            return new JsonObject
-            {
-                ["planetId"] = source["planetId"],
-                ["planetName"] = source["planetName"],
-                ["factoryIndex"] = source["factoryIndex"],
-                ["totalMatched"] = matchedCount,
-                ["limit"] = normalizedLimit,
-                ["nextStartId"] = result.Count == normalizedLimit ? lastEntityId + 1 : (object)null,
-                ["filters"] = new JsonObject
-                {
-                    ["status"] = status,
-                    ["protoId"] = protoId,
-                    ["startId"] = startId,
-                    ["x"] = x,
-                    ["y"] = y,
-                    ["z"] = z,
-                    ["radius"] = radius
-                },
-                ["items"] = result
-            };
+            return pending.Completion.Task;
         }
 
         public void Update()
         {
+            latestGameStatus = CaptureGameStatus();
             var unavailableReason = GetSessionUnavailableReason();
-            latestSessionGate = CaptureSessionGate(unavailableReason);
             if (unavailableReason != null)
             {
                 MarkSessionUnavailable(unavailableReason);
+                RejectPendingStateQueries(JsonString(latestGameStatus, "status", "unknown"));
                 return;
             }
 
             var gameTick = GameMain.gameTick;
-            if (latestSnapshot != null && gameTick >= lastCaptureGameTick &&
-                gameTick - lastCaptureGameTick < snapshotIntervalTicks)
+            if (GameMain.isPaused)
+            {
+                if (HasPendingStateQueries())
+                {
+                    ExecutePendingStateQueries(gameTick);
+                }
+
+                return;
+            }
+
+            if (gameTick == lastQueryDispatchGameTick || gameTick % snapshotIntervalTicks != 0)
             {
                 return;
             }
 
-            Capture(gameTick);
+            lastQueryDispatchGameTick = gameTick;
+            ExecutePendingStateQueries(gameTick);
         }
 
-        private void Capture(long gameTick)
+        private bool HasPendingStateQueries()
         {
-            var stopwatch = Stopwatch.StartNew();
-            try
+            lock (queryLock)
             {
-                var fullData = new JsonObject();
-                var metadata = CaptureMetadata(gameTick);
-                fullData["metadata"] = metadata;
-                fullData["game"] = CaptureGameState();
-                fullData["player"] = CapturePlayer();
-                fullData["mecha"] = CaptureMecha();
-                fullData["inventory"] = CaptureInventory();
-                fullData["forge"] = CaptureForge();
-                fullData["research"] = CaptureResearch();
-                fullData["localPlanetFactories"] = CaptureLocalPlanetFactories();
-                fullData["localPlanet"] = CaptureLocalPlanet(fullData["localPlanetFactories"] as JsonObject);
-                fullData["preferences"] = CapturePreferences();
-                fullData["statistics"] = CaptureStatistics();
-                fullData["spaceSector"] = CaptureSpaceSector();
-                fullData["galaxy"] = CaptureGalaxy();
-                fullData["dysonSpheres"] = CaptureDysonSpheres();
-                fullData["history"] = CaptureHistory();
-                fullData["galacticTransport"] = CaptureGalacticTransport();
-                fullData["warningSystem"] = CaptureWarningSystem();
-                fullData["trashSystem"] = CaptureTrashSystem();
-                fullData["goalSystem"] = CaptureGoalSystem();
-                fullData["milestoneSystem"] = CaptureMilestoneSystem();
-                fullData["gameAchievement"] = CaptureGameAchievement();
-                fullData["production"] = CaptureProduction();
-                fullData["power"] = CapturePower();
+                return pendingStateQueries.Count > 0;
+            }
+        }
 
-                stopwatch.Stop();
-                ((JsonObject)fullData["metadata"])["captureDurationMs"] = stopwatch.Elapsed.TotalMilliseconds;
-
-                var stateData = BuildStateSnapshot(fullData);
-                var snapshot = new StateSnapshot(nextSnapshotId++, gameTick, stateData);
-                latestGameLoaded = Convert.ToBoolean(metadata["gameLoaded"]);
-                latestSnapshot = snapshot;
-                latestLocalPlanetFactories = fullData["localPlanetFactories"] as JsonObject;
-                lastCaptureGameTick = gameTick;
-                inactiveLogged = false;
-                inactiveSnapshotFileChecked = false;
-                WriteSnapshotFiles(snapshot, fullData);
-
-                if (snapshot.Id == 1 || snapshot.Id % 60 == 0)
+        private void ExecutePendingStateQueries(long gameTick)
+        {
+            List<PendingStateQuery> queries;
+            lock (queryLock)
+            {
+                if (pendingStateQueries.Count == 0)
                 {
-                    log.LogInfo($"Captured state snapshot {snapshot.Id} at gameTick {gameTick}.");
+                    return;
+                }
+
+                queries = new List<PendingStateQuery>(pendingStateQueries);
+                pendingStateQueries.Clear();
+            }
+
+            foreach (var query in queries)
+            {
+                if (query.Completion.Task.IsCompleted)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    query.TrySetResult(EvaluateStateQuery(query.Plan, gameTick));
+                }
+                catch (Exception ex)
+                {
+                    log.LogWarning($"State query failed: {ex}");
+                    query.TrySetException(ex);
                 }
             }
-            catch (Exception ex)
+        }
+
+        private void RejectPendingStateQueries(string status)
+        {
+            List<PendingStateQuery> queries;
+            lock (queryLock)
             {
-                log.LogWarning($"State snapshot capture failed: {ex}");
+                if (pendingStateQueries.Count == 0)
+                {
+                    return;
+                }
+
+                queries = new List<PendingStateQuery>(pendingStateQueries);
+                pendingStateQueries.Clear();
             }
+
+            var exception = new StateQueryNotReadyException(status);
+            foreach (var query in queries)
+            {
+                query.TrySetException(exception);
+            }
+        }
+
+        private void CancelPendingStateQuery(PendingStateQuery query)
+        {
+            lock (queryLock)
+            {
+                pendingStateQueries.Remove(query);
+            }
+
+            query.TrySetCanceled();
         }
 
         private void MarkSessionUnavailable(string reason)
         {
-            latestGameLoaded = false;
-            latestSnapshot = null;
-            latestLocalPlanetFactories = null;
-            lastCaptureGameTick = -1;
-
             if (!inactiveSnapshotFileChecked)
             {
                 ClearPersistedSnapshots();
@@ -255,125 +205,255 @@ namespace AutomaticDSP.State
             }
         }
 
-        private static JsonObject BuildStateSnapshot(JsonObject fullData)
+        private JsonObject EvaluateStateQuery(StateQueryPlan plan, long gameTick)
         {
-            var state = new JsonObject
-            {
-                ["metadata"] = fullData["metadata"],
-                ["game"] = fullData["game"],
-                ["player"] = fullData["player"],
-                ["mecha"] = fullData["mecha"],
-                ["inventory"] = fullData["inventory"],
-                ["forge"] = fullData["forge"],
-                ["research"] = fullData["research"],
-                ["localPlanet"] = fullData["localPlanet"],
-                ["preferences"] = fullData["preferences"],
-                ["statistics"] = fullData["statistics"],
-                ["spaceSector"] = SpaceSectorOverview(fullData["spaceSector"] as JsonObject),
-                ["galaxy"] = SectionWithout(fullData["galaxy"] as JsonObject, "stars"),
-                ["dysonSpheres"] = SectionWithout(fullData["dysonSpheres"] as JsonObject, "items"),
-                ["history"] = fullData["history"],
-                ["galacticTransport"] = SectionWithout(fullData["galacticTransport"] as JsonObject, "stations"),
-                ["warningSystem"] = fullData["warningSystem"],
-                ["trashSystem"] = fullData["trashSystem"],
-                ["goalSystem"] = fullData["goalSystem"],
-                ["milestoneSystem"] = fullData["milestoneSystem"],
-                ["gameAchievement"] = fullData["gameAchievement"],
-                ["production"] = fullData["production"],
-                ["power"] = fullData["power"]
-            };
-
-            return state;
-        }
-
-        private static JsonObject SpaceSectorOverview(JsonObject section)
-        {
-            var overview = SectionWithout(section, "astros", "galaxyAstros", "enemies", "crafts", "dfHives");
-            if (overview == null)
-            {
-                return null;
-            }
-
-            overview["spaceRuins"] = SectionWithout(overview["spaceRuins"] as JsonObject, "items");
-            return overview;
-        }
-
-        private static JsonObject SectionWithout(JsonObject section, params string[] excludedKeys)
-        {
-            if (section == null)
-            {
-                return null;
-            }
-
             var result = new JsonObject();
-            foreach (var pair in section)
+            foreach (var field in plan.Fields)
             {
-                if (ContainsKey(excludedKeys, pair.Key))
-                {
-                    continue;
-                }
-
-                result[pair.Key] = pair.Value;
+                var source = ResolveRootSource(field.Name, gameTick);
+                result[field.ResponseName] = ResolveQueryValue(source, field, 0);
             }
 
             return result;
         }
 
-        private static bool ContainsKey(string[] keys, string value)
+        private static object ResolveRootSource(string name, long gameTick)
         {
-            for (var i = 0; i < keys.Length; i++)
+            switch (name)
             {
-                if (keys[i] == value)
-                {
-                    return true;
-                }
+                case "metadata":
+                    return CaptureQueryMetadata(gameTick);
+                case "game":
+                    return CaptureQueryableGameState();
+                case "gameMain":
+                    return GameMain.instance;
+                case "data":
+                    return GameMain.data;
+                case "player":
+                case "mainPlayer":
+                    return GameMain.mainPlayer;
+                case "mecha":
+                    return GameMain.mainPlayer?.mecha;
+                case "inventory":
+                case "package":
+                    return GameMain.mainPlayer?.package;
+                case "forge":
+                case "replicator":
+                    return GameMain.mainPlayer?.mecha?.forge;
+                case "localPlanet":
+                case "currentPlanet":
+                    return GameMain.localPlanet;
+                case "localStar":
+                    return GameMain.localStar;
+                case "factory":
+                case "localFactory":
+                    return GameMain.localPlanet?.factory;
+                case "factories":
+                    return GameMain.data?.factories;
+                case "production":
+                    return GameMain.statistics?.production;
+                case "power":
+                    return GameMain.localPlanet?.factory?.powerSystem;
             }
 
-            return false;
+            return GetGameMainStaticMember(name) ??
+                MemberValue(GameMain.instance, name) ??
+                GetGameDataMember(name);
         }
 
-        private void WriteSnapshotFiles(StateSnapshot snapshot, JsonObject fullData)
+        private static JsonObject CaptureQueryMetadata(long gameTick)
         {
-            try
+            return new JsonObject
             {
-                Directory.CreateDirectory(snapshotDirectory);
-                DeleteSnapshotFile("latest.json");
-                WriteSnapshotFileIfChanged("state.json", snapshot.Data);
-                WriteSnapshotFileIfChanged("galaxy.json", fullData["galaxy"]);
-                WriteSnapshotFileIfChanged("transport.stations.json", fullData["galacticTransport"]);
-                WriteSnapshotFileIfChanged("spheres.json", fullData["dysonSpheres"]);
-                WriteSnapshotFileIfChanged("localPlanet.factories.json", fullData["localPlanetFactories"]);
-            }
-            catch (Exception ex)
-            {
-                log.LogWarning($"Failed to write state snapshot files: {ex.Message}");
-            }
+                ["gameTick"] = gameTick,
+                ["queriedAt"] = DateTimeOffset.UtcNow,
+                ["localPlanetId"] = GameMain.localPlanet?.id,
+                ["localStarId"] = GameMain.localStar?.id,
+                ["schemaVersion"] = 1
+            };
         }
 
-        private void WriteSnapshotFileIfChanged(string fileName, object payload)
+        private static JsonObject CaptureQueryableGameState()
         {
-            var snapshotPath = Path.Combine(snapshotDirectory, fileName);
-            var tempPath = snapshotPath + ".tmp";
-            var json = JsonConvert.SerializeObject(payload, Formatting.Indented, jsonSettings);
-
-            if (File.Exists(snapshotPath) && File.ReadAllText(snapshotPath, Encoding.UTF8) == json)
+            return new JsonObject
             {
-                if (File.Exists(tempPath))
+                ["ready"] = IsGameLoaded(),
+                ["status"] = GetGameStatusValue(),
+                ["gameName"] = GameMain.gameName,
+                ["name"] = GameMain.gameName,
+                ["creationTime"] = GameMain.creationTime,
+                ["gameTick"] = GameMain.gameTick,
+                ["gameTime"] = GameMain.gameTime,
+                ["onceGameTick"] = GameMain.onceGameTick,
+                ["onceGameTime"] = GameMain.onceGameTime,
+                ["sandboxToolsEnabled"] = GameMain.sandboxToolsEnabled,
+                ["desc"] = CaptureGameDesc(),
+                ["localStarId"] = GameMain.localStar?.id,
+                ["localStarName"] = GameMain.localStar?.displayName,
+                ["localPlanetId"] = GameMain.localPlanet?.id,
+                ["localPlanetName"] = GameMain.localPlanet?.displayName
+            };
+        }
+
+        private static object ResolveQueryValue(object value, StateQueryField field, int depth)
+        {
+            if (value == null || depth > MaxQueryDepth)
+            {
+                return null;
+            }
+
+            if (field.Children.Count == 0)
+            {
+                return SerializeQueryLeaf(value, field);
+            }
+
+            if (value is IEnumerable enumerable && !(value is string))
+            {
+                return ResolveQueryEnumerable(enumerable, field, depth);
+            }
+
+            if (value is UnityEngine.Object)
+            {
+                return null;
+            }
+
+            return ResolveQueryObject(value, field.Children, depth + 1);
+        }
+
+        private static JsonObject ResolveQueryObject(object source, List<StateQueryField> fields, int depth)
+        {
+            var result = new JsonObject();
+            foreach (var field in fields)
+            {
+                var value = ResolveQueryMember(source, field.Name);
+                result[field.ResponseName] = ResolveQueryValue(value, field, depth);
+            }
+
+            return result;
+        }
+
+        private static object ResolveQueryEnumerable(IEnumerable enumerable, StateQueryField field, int depth)
+        {
+            var result = new List<object>();
+            var offset = Math.Max(0, field.Offset ?? 0);
+            var limit = Math.Max(0, Math.Min(field.Limit ?? DefaultQueryListLimit, MaxQueryListLimit));
+            var index = 0;
+
+            foreach (var item in enumerable)
+            {
+                if (index++ < offset)
                 {
-                    File.Delete(tempPath);
+                    continue;
                 }
 
-                return;
+                if (result.Count >= limit)
+                {
+                    break;
+                }
+
+                result.Add(field.Children.Count == 0
+                    ? SerializeQueryLeaf(item, field)
+                    : ResolveQueryValue(item, field, depth + 1));
             }
 
-            File.WriteAllText(tempPath, json, Encoding.UTF8);
+            return result;
+        }
 
-            if (File.Exists(snapshotPath))
+        private static object ResolveQueryMember(object source, string name)
+        {
+            if (source == null)
             {
-                File.Delete(snapshotPath);
+                return null;
             }
 
-            File.Move(tempPath, snapshotPath);
+            if (source is JsonObject jsonObject)
+            {
+                return jsonObject.TryGetValue(name, out var value) ? value : null;
+            }
+
+            return MemberValue(source, name);
+        }
+
+        private static object SerializeQueryLeaf(object value, StateQueryField field)
+        {
+            if (value == null)
+            {
+                return null;
+            }
+
+            if (IsQueryScalar(value))
+            {
+                return value;
+            }
+
+            if (value is Enum)
+            {
+                return value.ToString();
+            }
+
+            var vector = VectorOrNull(value);
+            if (vector != null)
+            {
+                return vector;
+            }
+
+            var quaternion = QuaternionOrNull(value);
+            if (quaternion != null)
+            {
+                return quaternion;
+            }
+
+            if (value is JsonObject jsonObject)
+            {
+                return new JsonObject();
+            }
+
+            if (value is IEnumerable enumerable && !(value is string))
+            {
+                var result = new List<object>();
+                var offset = Math.Max(0, field.Offset ?? 0);
+                var limit = Math.Max(0, Math.Min(field.Limit ?? DefaultQueryListLimit, MaxQueryListLimit));
+                var index = 0;
+                foreach (var item in enumerable)
+                {
+                    if (index++ < offset)
+                    {
+                        continue;
+                    }
+
+                    if (result.Count >= limit)
+                    {
+                        break;
+                    }
+
+                    result.Add(item == null
+                        ? null
+                        : IsQueryScalar(item) ? SerializeQueryLeaf(item, field) : new JsonObject());
+                }
+
+                return result;
+            }
+
+            return new JsonObject();
+        }
+
+        private static bool IsQueryScalar(object value)
+        {
+            return value is string ||
+                value is bool ||
+                value is byte ||
+                value is sbyte ||
+                value is short ||
+                value is ushort ||
+                value is int ||
+                value is uint ||
+                value is long ||
+                value is ulong ||
+                value is float ||
+                value is double ||
+                value is decimal ||
+                value is DateTime ||
+                value is DateTimeOffset;
         }
 
         private void ClearPersistedSnapshots()
@@ -467,21 +547,6 @@ namespace AutomaticDSP.State
             }
         }
 
-        private JsonObject CaptureMetadata(long gameTick)
-        {
-            return new JsonObject
-            {
-                ["snapshotId"] = nextSnapshotId,
-                ["gameTick"] = gameTick,
-                ["capturedAt"] = DateTimeOffset.UtcNow,
-                ["captureDurationMs"] = 0,
-                ["gameLoaded"] = IsGameLoaded(),
-                ["localPlanetId"] = GameMain.localPlanet?.id,
-                ["localStarId"] = GameMain.localStar?.id,
-                ["schemaVersion"] = 1
-            };
-        }
-
         private JsonObject CaptureGameState()
         {
             var data = GameMain.data;
@@ -543,6 +608,91 @@ namespace AutomaticDSP.State
                     ["hasTrashSystem"] = data?.trashSystem != null
                 }
             };
+        }
+
+        private static JsonObject CaptureGameStatus()
+        {
+            var status = GetGameStatusValue();
+            var ready = status == "running" || status == "paused";
+            var result = new JsonObject
+            {
+                ["ready"] = ready,
+                ["status"] = status
+            };
+
+            if (!ready)
+            {
+                return result;
+            }
+
+            var desc = GetGameDataMember("gameDesc");
+            var combatSettings = MemberValue(desc, "combatSettings");
+            result["gameName"] = GameMain.gameName;
+            result["gameTick"] = GameMain.gameTick;
+            result["gameTime"] = GameMain.gameTime;
+            result["onceGameTick"] = GameMain.onceGameTick;
+            result["onceGameTime"] = GameMain.onceGameTime;
+            result["sandboxToolsEnabled"] = GameMain.sandboxToolsEnabled;
+            result["creationTime"] = GameMain.creationTime;
+            result["isCombatMode"] = MemberBool(desc, false, "isCombatMode");
+            result["combatModeDifficulty"] = combatSettings == null ? (object)null : MemberDouble(combatSettings, 0, "difficulty");
+            result["resourceMultiplier"] = desc == null ? (object)null : MemberDouble(desc, 0, "resourceMultiplier");
+            result["oilAmountMultiplier"] = desc == null ? (object)null : MemberDouble(desc, 0, "oilAmountMultiplier");
+            result["starCount"] = desc == null ? (object)null : MemberInt(desc, 0, "starCount");
+            return result;
+        }
+
+        private static string GetGameStatusValue()
+        {
+            try
+            {
+                if (GameMain.loadErrored)
+                {
+                    return "error";
+                }
+
+                if (GameMain.isLoading)
+                {
+                    return "loading";
+                }
+
+                var data = GameMain.data;
+                if (data == null || DSPGame.IsMenuDemo || IsGameMainMenuDemo())
+                {
+                    return "menu";
+                }
+
+                if (GameMain.isEnded)
+                {
+                    return "ended";
+                }
+
+                if (DSPGame.IsCombatCutscene)
+                {
+                    return "cutscene";
+                }
+
+                if (MemberBool(data, false, "guideRunning") && !MemberBool(data, false, "guideComplete"))
+                {
+                    return "prologue";
+                }
+
+                if (GameMain.isPaused || GameMain.isFullscreenPaused || GameMain.inOtherScene)
+                {
+                    return "paused";
+                }
+
+                if (GameMain.isRunning)
+                {
+                    return "running";
+                }
+
+                return "unknown";
+            }
+            catch
+            {
+                return "unknown";
+            }
         }
 
         private static JsonObject CaptureGameDesc()
@@ -1081,6 +1231,42 @@ namespace AutomaticDSP.State
             return GetMemberValue(GameMain.data, names);
         }
 
+        private static object GetGameMainStaticMember(params string[] names)
+        {
+            var type = typeof(GameMain);
+            const BindingFlags flags = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
+            foreach (var name in names)
+            {
+                var field = type.GetField(name, flags);
+                if (field != null)
+                {
+                    try
+                    {
+                        return field.GetValue(null);
+                    }
+                    catch
+                    {
+                        continue;
+                    }
+                }
+
+                var property = type.GetProperty(name, flags);
+                if (property != null && property.GetIndexParameters().Length == 0)
+                {
+                    try
+                    {
+                        return property.GetValue(null, null);
+                    }
+                    catch
+                    {
+                        continue;
+                    }
+                }
+            }
+
+            return null;
+        }
+
         private static object GetMemberValue(object target, params string[] names)
         {
             if (target == null)
@@ -1348,6 +1534,33 @@ namespace AutomaticDSP.State
             {
                 return defaultValue;
             }
+        }
+
+        private static bool JsonBool(JsonObject data, string key, bool defaultValue)
+        {
+            if (data == null || !data.ContainsKey(key) || data[key] == null)
+            {
+                return defaultValue;
+            }
+
+            try
+            {
+                return Convert.ToBoolean(data[key]);
+            }
+            catch
+            {
+                return defaultValue;
+            }
+        }
+
+        private static string JsonString(JsonObject data, string key, string defaultValue)
+        {
+            if (data == null || !data.ContainsKey(key) || data[key] == null)
+            {
+                return defaultValue;
+            }
+
+            return data[key].ToString();
         }
 
         private static int CountOf(object value)
@@ -2226,47 +2439,6 @@ namespace AutomaticDSP.State
             return null;
         }
 
-        private static JsonObject CaptureSessionGate(string reason)
-        {
-            try
-            {
-                return new JsonObject
-                {
-                    ["loaded"] = reason == null,
-                    ["reason"] = reason,
-                    ["gameMainData"] = GameMain.data != null,
-                    ["gameMainNotNull"] = GameMain.notNull,
-                    ["gameMainRunning"] = GameMain.isRunning,
-                    ["gameMainLoading"] = GameMain.isLoading,
-                    ["gameMainEnded"] = GameMain.isEnded,
-                    ["gameMainLoadErrored"] = GameMain.loadErrored,
-                    ["gameMainInOtherScene"] = GameMain.inOtherScene,
-                    ["dspGameIsMenuDemo"] = DSPGame.IsMenuDemo,
-                    ["gameMainIsMenuDemo"] = IsGameMainMenuDemo(),
-                    ["mainPlayer"] = GameMain.mainPlayer != null,
-                    ["history"] = GameMain.history != null,
-                    ["statistics"] = GameMain.statistics != null,
-                    ["galaxy"] = GameMain.galaxy != null,
-                    ["gameTick"] = GameMain.gameTick,
-                    ["gameTime"] = GameMain.gameTime,
-                    ["gameName"] = GameMain.gameName
-                };
-            }
-            catch (Exception ex)
-            {
-                return SessionGate("exception_" + ex.GetType().Name);
-            }
-        }
-
-        private static JsonObject SessionGate(string reason)
-        {
-            return new JsonObject
-            {
-                ["loaded"] = false,
-                ["reason"] = reason
-            };
-        }
-
         private JsonObject CapturePlayer()
         {
             var player = GameMain.mainPlayer;
@@ -3008,34 +3180,9 @@ namespace AutomaticDSP.State
                     return "game_load_errored";
                 }
 
-                if (GameMain.inOtherScene)
-                {
-                    return "game_in_other_scene";
-                }
-
                 if (DSPGame.IsMenuDemo || IsGameMainMenuDemo())
                 {
                     return "menu_demo";
-                }
-
-                if (GameMain.mainPlayer == null)
-                {
-                    return "main_player_missing";
-                }
-
-                if (GameMain.history == null)
-                {
-                    return "history_missing";
-                }
-
-                if (GameMain.statistics == null)
-                {
-                    return "statistics_missing";
-                }
-
-                if (GameMain.galaxy == null)
-                {
-                    return "galaxy_missing";
                 }
 
                 return null;

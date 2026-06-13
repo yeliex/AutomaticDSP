@@ -24,21 +24,20 @@ http://127.0.0.1:39270/
 
 可用端点：
 
-- `GET /health`
-- `GET /state`
+- `GET /state/game`
+- `POST /state`
 - `GET /tasks`
 - `GET /history`
+
+`GET /state/game` 是轻量游戏运行状态接口。未进入可查询对局时只返回 `ready` 和 `status`；进入对局后会额外返回 `gameName`、tick/time、沙盒开关、创建时间、战斗模式、资源倍率、油倍率和恒星数量。
+
+`POST /state` 接收 GraphQL 字段选择 DSL。HTTP 线程只把查询排队；游戏主线程每 60 game ticks drain 待查询队列，并在主线程为每个请求生成最终 JSON。字段不存在或不可读时返回 `null`，复杂对象未选择子字段时返回 `{}`。
 
 运行时数据输出到：
 
 - `BepInEx/cache/AutomaticDSP/data/history.sqlite`
-- `BepInEx/cache/AutomaticDSP/snapshots/state.json`
-- `BepInEx/cache/AutomaticDSP/snapshots/galaxy.json`
-- `BepInEx/cache/AutomaticDSP/snapshots/transport.stations.json`
-- `BepInEx/cache/AutomaticDSP/snapshots/spheres.json`
-- `BepInEx/cache/AutomaticDSP/snapshots/localPlanet.factories.json`
 
-这些快照只会在真实对局载入后写入，并使用格式化 JSON 便于调试。`state.json` 是 `/state` 的总览数据；星系、物流站、戴森球和当前星球工厂实体明细拆到独立文件，且只在内容变化时更新。停留在主菜单、菜单演示或加载界面时，Mod 会清理旧快照和早期 dump，避免把菜单里的默认游戏对象误当成可观测状态。
+状态查询结果只保存在内存中，不默认写入快照文件。停留在主菜单、菜单演示或加载界面时，Mod 会清理旧快照和早期 dump，避免把菜单里的默认游戏对象误当成可观测状态。
 
 默认游戏目录：
 

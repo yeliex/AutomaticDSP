@@ -1,7 +1,7 @@
 # AutomaticDSP 需求说明
 
-> 当前 M1 实现以 `docs/development-plan.md` 为准：先提供本地 REST/JSON 只读观测接口，`GET /state` 读取快照，`GET /tasks` 与 `GET /history` 独立返回任务和历史。本文中 GraphQL 与任务执行描述保留为后续阶段目标草案。
-> M1 运行时数据和最新快照统一输出到 `BepInEx/cache/AutomaticDSP`。
+> 当前 M1 实现以 `docs/development-plan.md` 为准：`GET /state/game` 返回轻量游戏状态，`POST /state` 使用 GraphQL 字段选择 DSL 按需查询游戏状态，`GET /tasks` 与 `GET /history` 独立返回任务和历史。
+> M1 状态查询只保存在内存中，不默认输出快照文件；历史命令写入 `BepInEx/cache/AutomaticDSP/data/history.sqlite`。
 
 ## 背景
 
@@ -13,7 +13,7 @@ AutomaticDSP 是一个用于《戴森球计划》的自动化控制 Mod。目标
 
 第一阶段需要做到：
 
-1. 外部程序可以通过 GraphQL 一次性查询同一快照内的多个游戏状态。
+1. 外部程序可以通过 GraphQL 字段选择 DSL 一次性查询同一游戏查询 tick 内的多个游戏状态。
 2. 外部程序可以提交任务到唯一顺序任务队列。
 3. 游戏内按顺序执行任务中的命令。
 4. 外部程序可以把 `task` 作为实体查询状态，也可以取消任务。
@@ -33,19 +33,24 @@ AutomaticDSP 是一个用于《戴森球计划》的自动化控制 Mod。目标
 
 ## 核心概念
 
-### 快照
+### 状态查询
 
-所有查询都从 `snapshot` 根字段进入。一次 GraphQL query 内的字段必须来自同一个不可变快照，避免外部 Agent 分多次查询时看到互相不一致的状态。
+`POST /state` 使用 GraphQL 查询语法作为字段选择 DSL。它不是完整 GraphQL 服务，不提供 schema、自省、resolver 框架或 mutation。
 
-快照至少包含：
+一次 `/state` 请求会被放入主线程查询队列。游戏主线程在查询 tick 内直接按该请求的字段、别名和分页参数生成最终 JSON，HTTP 线程只等待并返回结果，不再做二次字段投影。
 
-- `tick`：快照序号。
-- `gameTick`：游戏 tick。
+状态查询至少覆盖：
+
+- `metadata`：查询 tick、查询时间、当前星球和恒星 ID。
+- `game`：对局状态和基础配置。
 - `player`：伊卡洛斯状态。
-- `inventory`：背包与手搓队列状态。
-- `technology`：科技解锁状态。
+- `inventory`：背包物品。
+- `forge` / `replicator`：背包制造队列。
 - `localPlanet`：当前行星状态。
-- `tasks`：任务状态查询入口。
+- `factory` / `localFactory`：当前行星工厂对象。
+- `production`：生产统计。
+- `power`：当前行星供电系统。
+- `data`：`GameMain.data` 中可序列化字段的按需读取入口。
 
 ### 实体
 
@@ -65,98 +70,96 @@ AutomaticDSP 是一个用于《戴森球计划》的自动化控制 Mod。目标
 - `powerNetwork`：供电网络和供电状态。
 - `recipe`：配方及解锁状态。
 - `item`：物品原型。
-- `task`：已提交任务。
+任务不放在 `/state` 查询里。待执行或执行中的任务通过 `GET /tasks` 查询，历史任务通过 `GET /history` 查询。
 
-`task_queue` 不是对外实体。唯一队列通过查询 `task` 获得，例如 `tasks(where: { type: QUEUE })`。
+`task_queue` 不是对外实体。唯一队列通过 `GET /tasks` 获得，返回结果中的每一项都是一个任务。
 
-`command` 也不是对外实体。命令是 `task.commands` 列表中的嵌套对象，每一项都是一条命令。需要查看命令状态时，查询对应 task 并选择 `commands` 字段。
+`command` 也不是对外实体。命令是 task 列表项中的嵌套对象，每一项都是一条命令。需要查看命令状态时，查询对应 task 的 `commands` 字段。
 
 后续阶段可以增加 `logisticStation`、`star`、`dysonSphere` 等实体。
 
 ## GraphQL 查询
 
-查询协议采用 GraphQL，而不是 SQL 或自定义 JSON DSL。
+查询协议采用 GraphQL 查询语法作为字段选择 DSL，而不是 SQL 或自定义 JSON DSL。
 
 选择 GraphQL 的原因：
 
-- 一次查询可以同时获取玩家、背包、建筑、任务和命令状态。
+- 一次查询可以同时获取玩家、背包、建筑、生产、电力等游戏状态。
 - 字段投影天然适合 AI Agent 按需取数。
-- `task.commands` 这类嵌套结构不需要摊平成独立表。
-- `snapshot` 可以保证单次查询内的数据一致性。
+- 嵌套结构不需要摊平成独立表。
+- 单个请求在同一个游戏查询 tick 内读取，减少前后状态不一致。
 
 第一阶段查询必须支持：
 
 - 多 root 字段组合查询。
 - 嵌套字段投影。
-- `where` 过滤。
-- `orderBy` 排序。
-- `limit` 限制。
-- 当前上下文枚举，例如 `CURRENT_PLANET`、`PLAYER_POSITION`。
-- 空间查询，例如半径范围、包围盒、距离玩家最近。
+- `limit` 和 `offset` 分页。
+- 不存在或不可读字段返回 `null`。
+- 复杂对象未选择子字段时返回 `{}`。
 
 第一阶段不支持：
 
 - 任意脚本执行。
 - 查询时修改游戏状态。
 - 无限制全量导出。
-- 外部直接查询 DSP 内部对象字段。
+- GraphQL schema、自省、变量校验、业务字段校验。
+- `where`、`orderBy`、空间过滤等高级参数。
 
 示例：
 
 ```graphql
 query ObserveFactory {
-  snapshot {
-    tick
-    player {
-      planetId
-      position {
+  metadata {
+    gameTick
+    localPlanetId
+  }
+  game {
+    gameName
+    gameTick
+  }
+  player {
+    planetId
+    uPosition {
+      x
+      y
+      z
+    }
+  }
+  inventory {
+    grids(limit: 20) {
+      itemId
+      count
+    }
+  }
+  factory {
+    entityCursor
+    entityPool(limit: 20) {
+      id
+      protoId
+      pos {
         x
         y
         z
       }
-      buildRange
     }
-    inventory {
-      items {
-        itemId
-        count
-      }
-    }
-    buildings(
-      where: {
-        planetId: CURRENT_PLANET
-        kindIn: [MINER, SMELTER]
-        withinRadius: { center: PLAYER_POSITION, radius: 80 }
-      }
-      orderBy: { field: DISTANCE_TO_PLAYER, direction: ASC }
-      limit: 100
-    ) {
+  }
+}
+```
+
+分页示例：
+
+```graphql
+query PagedEntities {
+  firstPage: factory {
+    entityPool(limit: 100, offset: 0) {
       id
-      kind
-      prototypeId
-      position {
-        x
-        y
-        z
-      }
-      recipeId
-      workState
+      protoId
     }
-    tasks(where: { type: QUEUE }, orderBy: { field: QUEUE_INDEX, direction: ASC }) {
+  }
+  secondPage: factory {
+    entityPool(limit: 100, offset: 100) {
       id
-      type
-      status
-      queueIndex
-      currentCommandIndex
-      commands {
-        id
-        type
-        status
-        error {
-          code
-          message
-        }
-      }
+      protoId
     }
   }
 }
@@ -166,18 +169,19 @@ query ObserveFactory {
 
 系统只允许一个任务队列，因为游戏内执行始终是顺序的。外部 Agent 可以提交多个任务，但任务只能追加到同一个队列中，队列按提交顺序执行。
 
-队列不作为独立实体暴露。查询队列中的任务时使用：
+队列不作为独立实体暴露。查询队列中的任务时使用 `GET /tasks`：
 
-```graphql
-query QueueTasks {
-  snapshot {
-    tasks(where: { type: QUEUE }, orderBy: { field: QUEUE_INDEX, direction: ASC }) {
-      id
-      status
-      queueIndex
-      currentCommandIndex
+```json
+{
+  "tasks": [
+    {
+      "id": "task-id",
+      "status": "RUNNING",
+      "queueIndex": 0,
+      "currentCommandIndex": 1,
+      "commands": []
     }
-  }
+  ]
 }
 ```
 
@@ -303,11 +307,12 @@ mutation CancelTask {
 
 第一阶段完成时，应能验证：
 
-1. 单次 GraphQL query 可以在同一 `snapshot.tick` 下查询玩家、背包、科技、当前行星建筑和任务状态。
-2. 外部程序提交任务后，任务进入唯一队列。
-3. 队列按顺序执行，不并行执行多个任务。
-4. 外部程序可以通过 `tasks(where: { type: QUEUE })` 查询队列中的任务。
-5. 外部程序可以查询某个 task，并读取其 `commands` 列表中每条命令的状态。
-6. 外部程序可以取消 `QUEUED` 或 `RUNNING` 任务。
-7. 一个简单铁块生产线任务可以在当前行星内完成。
-8. 缺少科技、材料或可建造地形时，任务失败并返回明确错误。
+1. `GET /state/game` 可以判断游戏是否处于可查询对局。
+2. `POST /state` 可以在同一游戏查询 tick 内按需读取玩家、背包、当前行星、工厂、生产和供电状态。
+3. `POST /state` 查询由主线程读取游戏对象并直接生成最终 JSON，HTTP 线程不做二次字段投影。
+4. 大列表支持 `limit` 和 `offset`，不存在字段返回 `null`，复杂对象未展开时返回 `{}`。
+5. `GET /tasks` 可以查询内存中的待执行或执行中任务；第一阶段可以为空列表。
+6. `GET /history` 可以查询 SQLite 中的历史命令；第一阶段可以为空列表。
+7. 外部程序后续提交任务后，任务进入唯一队列，队列按顺序执行，不并行执行多个任务。
+8. 后续建造阶段中，一个简单铁块生产线任务可以在当前行星内完成。
+9. 后续建造阶段中，缺少科技、材料或可建造地形时，任务失败并返回明确错误。

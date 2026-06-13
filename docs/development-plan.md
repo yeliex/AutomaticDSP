@@ -1,6 +1,6 @@
 # AutomaticDSP 开发计划
 
-本文是当前实现顺序的执行计划。早期需求和技术方案中提到的 GraphQL-first 设计保留为后续查询增强候选，不作为 M1 的交付范围。
+本文是当前实现顺序的执行计划。当前方向已经切换为 GraphQL 字段选择 DSL：`/state/game` 提供轻量运行状态探针，`POST /state` 按需查询游戏状态。
 
 ## 当前方向
 
@@ -8,16 +8,15 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 
 第一步采用简单模式：
 
-- 游戏主线程每 `60 game ticks` 生成一次状态快照，约 1 秒一次。
-- 外部查询只读取最新内存快照，不直接访问 DSP 游戏对象。
+- HTTP 线程接收 `POST /state` 后只解析 GraphQL 字段选择并入队，不直接访问 DSP 游戏对象。
+- 游戏主线程每 `60 game ticks` drain 待查询队列，并在主线程为每个请求生成最终 JSON，约 1 秒一次。
 - 任务状态不放进状态查询。
 - `GET /tasks` 查询内存中的待执行或执行中任务。
 - `GET /history` 查询 SQLite 中已完成、失败或取消的历史命令。
-- 运行时数据和快照统一输出到 `BepInEx/cache/AutomaticDSP`。
-- 暂不实现 GraphQL，先用 REST/JSON 跑通可观测性。
+- 状态查询结果只保存在内存中，不默认输出快照文件；历史命令继续保存到 `BepInEx/cache/AutomaticDSP/data/history.sqlite`。
 - HTTP 服务使用 .NET 内置 `HttpListener`，JSON 序列化使用 `Newtonsoft.Json`。
 - HTTP 默认监听 `127.0.0.1:39270`，其中 `HTTP.Host` 和 `HTTP.Port` 都是配置项；需要外部访问时可以把 `HTTP.Host` 改成 `0.0.0.0`。
-- 未加载存档、主菜单、菜单演示或加载界面不生成状态快照，`GET /state` 返回明确的不可用状态，并清理旧的 `snapshots/latest.json`、`snapshots/state.json`、`snapshots/galaxy.json`、`snapshots/transport.stations.json`、`snapshots/spheres.json`、早期 `dumps/gameData.json` 与早期 `diagnostics/gameMain.json`。
+- 未加载存档、主菜单、菜单演示或加载界面不接受 `/state` 查询，`GET /state/game` 返回轻量状态，并清理旧的 `snapshots/latest.json`、`snapshots/state.json`、`snapshots/galaxy.json`、`snapshots/transport.stations.json`、`snapshots/spheres.json`、早期 `dumps/gameData.json` 与早期 `diagnostics/gameMain.json`。
 
 采样间隔参考：
 
@@ -32,17 +31,16 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 ### 成功标准
 
 1. Mod 能在 BepInEx 中加载。
-2. 游戏载入后，主线程每 60 game ticks 采样一次状态。
-3. `GET /health` 能返回 Mod 状态、游戏是否载入、最近快照 tick。
-4. `GET /state` 能返回最新状态快照。
+2. 游戏载入后，主线程每 60 game ticks 批处理待查询字段。
+3. `GET /state/game` 能返回轻量游戏运行状态。
+4. `POST /state` 能按 GraphQL 字段选择返回游戏状态。
 5. `GET /tasks` 能返回内存中的待执行或执行中任务；第一步可以为空列表。
 6. `GET /history` 能返回 SQLite 中的历史命令；第一步可以为空列表。
 7. HTTP 请求线程不直接读取 DSP 游戏对象。
-8. 构建通过，游戏内日志能看到快照采样成功。
+8. 构建通过，游戏内日志无查询批处理异常。
 
 ### 第一阶段不做
 
-- GraphQL。
 - 任务提交。
 - 任务执行。
 - 移动伊卡洛斯。
@@ -51,24 +49,21 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 - Nebula 运行时依赖。
 - 全星系或全宇宙状态导出。
 
-## 第一阶段快照内容
+## 第一阶段状态查询内容
 
-快照按 AI Agent 玩游戏需要的决策信息组织，而不是直接暴露 DSP 内部对象。
+状态查询按 AI Agent 玩游戏需要的决策信息组织，而不是直接暴露 DSP 内部对象。
 
 ### metadata
 
-- `snapshotId`
 - `gameTick`
-- `capturedAt`
-- `captureDurationMs`
-- `gameLoaded`
+- `queriedAt`
 - `localPlanetId`
 - `localStarId`
 - `schemaVersion`
 
 ### game
 
-`game` 是从 `GameMain` 和 `GameMain.data` 抽取的稳定对局摘要，用来判断当前快照属于哪个存档、处于什么运行状态，以及哪些根系统可用。
+`game` 是从 `GameMain` 和 `GameMain.data` 抽取的稳定对局摘要，用来判断当前查询属于哪个存档、处于什么运行状态，以及哪些根系统可用。
 
 - 存档名称。
 - 存档创建时间。
@@ -199,43 +194,86 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 
 ## 第一阶段接口
 
-### GET /health
+### GET /state/game
 
-返回 Mod 与快照服务状态。
-当 `/state` 不可用时，`sessionGate` 会给出当前被拦截的原因，方便区分主菜单、加载中、菜单演示或真实对局字段缺失。
+返回主线程每 tick 维护的轻量游戏运行状态，不进入快照采集流程。
+
+未进入可查询对局时只返回：
 
 ```json
 {
-  "status": "ok",
-  "gameLoaded": true,
-  "hasState": true,
-  "latestSnapshotId": 12,
-  "latestGameTick": 123456,
-  "snapshotIntervalTicks": 60,
-  "sessionGate": {
-    "loaded": true,
-    "reason": null
+  "ready": false,
+  "status": "menu"
+}
+```
+
+`status` 当前取值为 `loading`、`running`、`paused`、`ended`、`prologue`、`cutscene`、`error`、`menu`、`unknown`。
+
+进入可查询对局时返回：
+
+```json
+{
+  "ready": true,
+  "gameName": "Save Name",
+  "gameTick": 123456,
+  "gameTime": 123.45,
+  "onceGameTick": 123456,
+  "onceGameTime": 123.45,
+  "sandboxToolsEnabled": false,
+  "creationTime": "2026-06-13T12:00:00",
+  "status": "running",
+  "isCombatMode": false,
+  "combatModeDifficulty": 0,
+  "resourceMultiplier": 1,
+  "oilAmountMultiplier": 1,
+  "starCount": 64
+}
+```
+
+### POST /state
+
+接收 GraphQL 字段选择 DSL，按需返回游戏状态。
+
+```json
+{
+  "query": "{ game { gameName gameTick } localPlanet { id displayName } inventory { size grids(limit: 10) { itemId count } } }"
+}
+```
+
+返回：
+
+```json
+{
+  "data": {
+    "game": {
+      "gameName": "Save Name",
+      "gameTick": 123456
+    },
+    "localPlanet": {
+      "id": 1,
+      "displayName": "地中海"
+    },
+    "inventory": {
+      "size": 120,
+      "grids": [
+        {
+          "itemId": 1101,
+          "count": 100
+        }
+      ]
+    }
   }
 }
 ```
 
-### GET /state
+查询规则：
 
-返回最新状态总览快照，对应 `snapshots/state.json`。
-
-缺失的 section 直接返回 `null`，正常 section 不额外返回 `available: true`。
-大列表明细不放入 `/state`：星系恒星/行星明细写入 `galaxy.json`，物流站明细写入 `transport.stations.json`，戴森球 items 明细写入 `spheres.json`，当前星球工厂实体明细写入 `localPlanet.factories.json`。这些明细文件只在内容变化时更新。
-
-第一步不做复杂查询参数。后续可以增加 `sections`、`nearPlayerRadius`、`limit` 等参数。
-
-### GET /state/current-planet/factories
-
-从最近一次当前星球工厂明细快照查询建筑实体列表，不直接读取游戏对象。支持参数：
-
-- `status`：按状态过滤，例如 `missingPower`、`materialShortage`、`outputBlocked`、`noRecipe`。
-- `protoId`：按建筑物品 ID 过滤。
-- `startId` 和 `limit`：按实体 ID 分页。
-- `x`、`y`、`z`、`radius`：按当前位置半径过滤。
+- 只解析 GraphQL 查询 DSL，不提供 GraphQL schema。
+- 不做业务字段校验。
+- 不存在或不可读字段返回 `null`。
+- 复杂对象未选择子字段时返回 `{}`，避免把“对象存在但未展开”误判为不存在。
+- 复杂列表默认最多返回 256 项，支持 `limit` 和 `offset`，单次 `limit` 上限为 2048。
+- 未进入可查询对局时返回 `409 game_not_ready`，不进入主线程查询队列。
 
 ### GET /tasks
 
@@ -284,23 +322,19 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 
 - 配置项：端口、快照间隔 tick、是否启用 HTTP。
 - 配置项：HTTP host 默认 `127.0.0.1`，HTTP port 默认 `39270`。
-- `StateSnapshot` DTO。
 - `StateSnapshotService`。
-- 主线程 60 tick 采样。
-- `GET /health`。
-- `GET /state`。
+- GraphQL 字段选择解析。
+- 主线程 60 tick 查询批处理。
+- `GET /state/game`。
+- `POST /state`。
 - `GET /tasks` 空实现。
 - `GET /history` 空实现。
 - SQLite 初始化和历史表结构，数据库位于 `BepInEx/cache/AutomaticDSP/data/history.sqlite`。
-- 最新状态总览写入 `BepInEx/cache/AutomaticDSP/snapshots/state.json`。
-- 星系、物流站、戴森球、当前星球工厂明细分别写入 `galaxy.json`、`transport.stations.json`、`spheres.json`、`localPlanet.factories.json`。
 
 验证：
 
-- 进入游戏后日志显示快照定时生成。
-- `GET /health` 返回最近快照 tick。
-- `GET /state` 至少返回 metadata、game、player、inventory、forge、research、localPlanet、preferences、statistics、spaceSector、galaxy、dysonSpheres、history、galacticTransport、warningSystem、trashSystem、goalSystem、milestoneSystem、gameAchievement、production、power 的总览统计。
-- `GET /state/current-planet/factories?status=missingPower` 能返回当前星球缺电建筑列表。
+- `GET /state/game` 返回轻量游戏运行状态。
+- `POST /state` 能查询 metadata、game、GameMain、GameMain.data 和可序列化游戏对象字段。
 - 不进入游戏时接口返回明确状态，而不是异常。
 - 停留在主菜单或菜单演示时不会保留旧的 `latest.json`、拆分快照或早期 `gameData.json`。
 
@@ -318,8 +352,8 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 验证：
 
 - AI Agent 能根据 `/state` 判断“能不能建一条铁块生产线”。
-- 快照生成耗时可观测。
-- 快照过大时有服务端上限或摘要策略。
+- 查询批处理耗时可观测。
+- 大列表查询有服务端上限或分页策略。
 
 ### M3：任务队列壳
 
@@ -407,10 +441,10 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 - 默认只监听 `127.0.0.1`。
 - 默认端口 `39270`。
 - SQLite 只存历史命令，不存完整游戏快照。
-- 最新 JSON 快照拆分写入 `BepInEx/cache/AutomaticDSP/snapshots/state.json`、`galaxy.json`、`transport.stations.json`、`spheres.json`、`localPlanet.factories.json`，用于调试和外部观测。
+- 状态查询不默认写入 JSON 快照文件；如需调试 dump，后续通过显式调试接口或配置开关实现。
 
 ## 待确认问题
 
-- `/state` 第一阶段返回所有 M1 字段，后续再增加 `?sections=`。
+- `/state` 后续是否需要增加查询耗时、字段读取错误等诊断信息。
 - 历史保留策略：无限保留、按条数保留，还是按天清理。
 - 是否需要为外部 Agent 提供 OpenAPI 描述。

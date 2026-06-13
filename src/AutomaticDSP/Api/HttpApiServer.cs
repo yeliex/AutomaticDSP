@@ -1,5 +1,4 @@
 using System;
-using System.Globalization;
 using System.Net;
 using System.Text;
 using System.Threading;
@@ -9,6 +8,7 @@ using AutomaticDSP.State;
 using AutomaticDSP.Storage;
 using AutomaticDSP.Tasks;
 using BepInEx.Logging;
+using GraphQLParser.Exceptions;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Serialization;
 
@@ -16,6 +16,7 @@ namespace AutomaticDSP.Api
 {
     internal sealed class HttpApiServer : IDisposable
     {
+        private static readonly TimeSpan StateQueryTimeout = TimeSpan.FromSeconds(10);
         private readonly HistoryStore historyStore;
         private readonly string host;
         private readonly ManualLogSource log;
@@ -98,57 +99,46 @@ namespace AutomaticDSP.Api
         {
             try
             {
-                if (!string.Equals(context.Request.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase))
-                {
-                    WriteJson(context, 405, Error("method_not_allowed", "Only GET is supported in M1."));
-                    return;
-                }
-
                 var path = context.Request.Url.AbsolutePath;
-                if (path == "/health")
+                if (path == "/state/game")
                 {
-                    WriteJson(context, 200, snapshotService.GetHealth());
+                    if (!IsGet(context))
+                    {
+                        WriteJson(context, 405, Error("method_not_allowed", "Only GET is supported for /state/game."));
+                        return;
+                    }
+
+                    WriteJson(context, 200, snapshotService.GetGameStatus());
                 }
                 else if (path == "/state")
                 {
-                    var snapshot = snapshotService.GetLatestSnapshot();
-                    if (snapshot == null)
+                    if (!string.Equals(context.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
                     {
-                        WriteJson(context, 503, Error("state_unavailable", "State snapshot is not available. Load a save or start a game first."));
+                        WriteJson(context, 405, Error("method_not_allowed", "Only POST is supported for /state."));
                     }
                     else
                     {
-                        WriteJson(context, 200, snapshot.Data);
-                    }
-                }
-                else if (path == "/state/current-planet/factories")
-                {
-                    var query = context.Request.QueryString;
-                    var result = snapshotService.GetLocalPlanetFactories(
-                        query["status"],
-                        ParseNullableInt(query["protoId"]),
-                        ParseInt(query["startId"], 0),
-                        ParseInt(query["limit"], 100),
-                        ParseNullableDouble(query["x"]),
-                        ParseNullableDouble(query["y"]),
-                        ParseNullableDouble(query["z"]),
-                        ParseNullableDouble(query["radius"]));
-
-                    if (result == null)
-                    {
-                        WriteJson(context, 503, Error("factories_unavailable", "Current planet factory snapshot is not available. Load a save and stand on a loaded planet first."));
-                    }
-                    else
-                    {
-                        WriteJson(context, 200, result);
+                        HandleStateQuery(context);
                     }
                 }
                 else if (path == "/tasks")
                 {
+                    if (!IsGet(context))
+                    {
+                        WriteJson(context, 405, Error("method_not_allowed", "Only GET is supported for /tasks."));
+                        return;
+                    }
+
                     WriteJson(context, 200, taskStateStore.GetActiveTasksResponse());
                 }
                 else if (path == "/history")
                 {
+                    if (!IsGet(context))
+                    {
+                        WriteJson(context, 405, Error("method_not_allowed", "Only GET is supported for /history."));
+                        return;
+                    }
+
                     WriteJson(context, 200, historyStore.GetHistoryResponse(100));
                 }
                 else
@@ -160,6 +150,68 @@ namespace AutomaticDSP.Api
             {
                 log.LogWarning($"HTTP request failed: {ex}");
                 WriteJson(context, 500, Error("internal_error", ex.Message));
+            }
+        }
+
+        private void HandleStateQuery(HttpListenerContext context)
+        {
+            if (!snapshotService.IsStateQueryReady(out var status))
+            {
+                WriteJson(context, 409, StateNotReady(status));
+                return;
+            }
+
+            StateQueryRequest request;
+            try
+            {
+                request = ReadStateQueryRequest(context);
+                if (request == null || string.IsNullOrWhiteSpace(request.Query))
+                {
+                    WriteJson(context, 400, Error("bad_request", "Request body must include a non-empty query string."));
+                    return;
+                }
+            }
+            catch (JsonException ex)
+            {
+                WriteJson(context, 400, Error("bad_json", ex.Message));
+                return;
+            }
+
+            StateQueryPlan plan;
+            try
+            {
+                plan = StateQueryParser.Parse(request.Query, request.OperationName);
+            }
+            catch (GraphQLParserException ex)
+            {
+                WriteJson(context, 400, Error("graphql_parse_error", ex.Message));
+                return;
+            }
+
+            try
+            {
+                using (var timeout = new CancellationTokenSource(StateQueryTimeout))
+                {
+                    var data = snapshotService.EnqueueStateQuery(plan, timeout.Token).GetAwaiter().GetResult();
+                    WriteJson(context, 200, new JsonObject { ["data"] = data });
+                }
+            }
+            catch (StateQueryNotReadyException ex)
+            {
+                WriteJson(context, 409, StateNotReady(ex.Status));
+            }
+            catch (OperationCanceledException)
+            {
+                WriteJson(context, 504, Error("query_timeout", "Timed out waiting for the next game-driven state query tick."));
+            }
+        }
+
+        private static StateQueryRequest ReadStateQueryRequest(HttpListenerContext context)
+        {
+            using (var reader = new System.IO.StreamReader(context.Request.InputStream, context.Request.ContentEncoding ?? Encoding.UTF8))
+            {
+                var body = reader.ReadToEnd();
+                return JsonConvert.DeserializeObject<StateQueryRequest>(body);
             }
         }
 
@@ -175,25 +227,22 @@ namespace AutomaticDSP.Api
             };
         }
 
-        private static int ParseInt(string value, int defaultValue)
+        private static object StateNotReady(string status)
         {
-            return int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var result)
-                ? result
-                : defaultValue;
+            return new JsonObject
+            {
+                ["error"] = new JsonObject
+                {
+                    ["code"] = "game_not_ready",
+                    ["message"] = "Game state is not ready for query.",
+                    ["status"] = status
+                }
+            };
         }
 
-        private static int? ParseNullableInt(string value)
+        private static bool IsGet(HttpListenerContext context)
         {
-            return int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var result)
-                ? result
-                : (int?)null;
-        }
-
-        private static double? ParseNullableDouble(string value)
-        {
-            return double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var result)
-                ? result
-                : (double?)null;
+            return string.Equals(context.Request.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase);
         }
 
         private static string DisplayHost(string value)
@@ -228,6 +277,13 @@ namespace AutomaticDSP.Api
             {
                 response.OutputStream.Close();
             }
+        }
+
+        private sealed class StateQueryRequest
+        {
+            public string Query { get; set; }
+
+            public string OperationName { get; set; }
         }
     }
 }
