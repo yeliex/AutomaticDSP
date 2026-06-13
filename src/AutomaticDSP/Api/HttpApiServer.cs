@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.Net;
 using System.Text;
 using System.Threading;
@@ -120,6 +121,28 @@ namespace AutomaticDSP.Api
                         WriteJson(context, 200, snapshot.Data);
                     }
                 }
+                else if (path == "/state/current-planet/factories")
+                {
+                    var query = context.Request.QueryString;
+                    var result = snapshotService.GetLocalPlanetFactories(
+                        query["status"],
+                        ParseNullableInt(query["protoId"]),
+                        ParseInt(query["startId"], 0),
+                        ParseInt(query["limit"], 100),
+                        ParseNullableDouble(query["x"]),
+                        ParseNullableDouble(query["y"]),
+                        ParseNullableDouble(query["z"]),
+                        ParseNullableDouble(query["radius"]));
+
+                    if (result == null)
+                    {
+                        WriteJson(context, 503, Error("factories_unavailable", "Current planet factory snapshot is not available. Load a save and stand on a loaded planet first."));
+                    }
+                    else
+                    {
+                        WriteJson(context, 200, result);
+                    }
+                }
                 else if (path == "/tasks")
                 {
                     WriteJson(context, 200, taskStateStore.GetActiveTasksResponse());
@@ -150,6 +173,27 @@ namespace AutomaticDSP.Api
                     ["message"] = message
                 }
             };
+        }
+
+        private static int ParseInt(string value, int defaultValue)
+        {
+            return int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var result)
+                ? result
+                : defaultValue;
+        }
+
+        private static int? ParseNullableInt(string value)
+        {
+            return int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var result)
+                ? result
+                : (int?)null;
+        }
+
+        private static double? ParseNullableDouble(string value)
+        {
+            return double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var result)
+                ? result
+                : (double?)null;
         }
 
         private static string DisplayHost(string value)

@@ -44,7 +44,7 @@ AutomaticDSP 是一个用于《戴森球计划》的自动化控制 Mod。目标
 - `player`：伊卡洛斯状态。
 - `inventory`：背包与手搓队列状态。
 - `technology`：科技解锁状态。
-- `currentPlanet`：当前行星状态。
+- `localPlanet`：当前行星状态。
 - `tasks`：任务状态查询入口。
 
 ### 实体

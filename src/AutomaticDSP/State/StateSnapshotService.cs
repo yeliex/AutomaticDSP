@@ -14,7 +14,6 @@ namespace AutomaticDSP.State
 {
     internal sealed class StateSnapshotService
     {
-        private const int FactoryEntitySampleLimit = 200;
         private const int SpaceObjectSampleLimit = 128;
         private static readonly string[] SnapshotFileNames =
         {
@@ -22,7 +21,8 @@ namespace AutomaticDSP.State
             "state.json",
             "galaxy.json",
             "transport.stations.json",
-            "spheres.json"
+            "spheres.json",
+            "localPlanet.factories.json"
         };
 
         private readonly ManualLogSource log;
@@ -42,6 +42,7 @@ namespace AutomaticDSP.State
         private bool latestGameLoaded;
         private JsonObject latestSessionGate;
         private StateSnapshot latestSnapshot;
+        private JsonObject latestLocalPlanetFactories;
 
         public StateSnapshotService(int snapshotIntervalTicks, string cacheRootPath, ManualLogSource log)
         {
@@ -71,6 +72,90 @@ namespace AutomaticDSP.State
                 ["latestGameTick"] = snapshot?.GameTick,
                 ["snapshotIntervalTicks"] = snapshotIntervalTicks,
                 ["sessionGate"] = latestSessionGate
+            };
+        }
+
+        public JsonObject GetLocalPlanetFactories(
+            string status,
+            int? protoId,
+            int startId,
+            int limit,
+            double? x,
+            double? y,
+            double? z,
+            double? radius)
+        {
+            var source = latestLocalPlanetFactories;
+            if (source == null)
+            {
+                return null;
+            }
+
+            var normalizedLimit = Math.Max(1, Math.Min(limit <= 0 ? 100 : limit, 500));
+            var result = new List<object>();
+            var matchedCount = 0;
+            var lastEntityId = 0;
+            var items = source["items"] as IEnumerable;
+
+            if (items != null)
+            {
+                foreach (var rawItem in items)
+                {
+                    var item = rawItem as JsonObject;
+                    if (item == null)
+                    {
+                        continue;
+                    }
+
+                    var entityId = JsonInt(item, "entityId", 0);
+                    if (startId > 0 && entityId < startId)
+                    {
+                        continue;
+                    }
+
+                    if (protoId.HasValue && JsonInt(item, "protoId", 0) != protoId.Value)
+                    {
+                        continue;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(status) && !EntityHasStatus(item, status))
+                    {
+                        continue;
+                    }
+
+                    if (!EntityInRadius(item, x, y, z, radius))
+                    {
+                        continue;
+                    }
+
+                    matchedCount++;
+                    if (result.Count < normalizedLimit)
+                    {
+                        result.Add(item);
+                        lastEntityId = entityId;
+                    }
+                }
+            }
+
+            return new JsonObject
+            {
+                ["planetId"] = source["planetId"],
+                ["planetName"] = source["planetName"],
+                ["factoryIndex"] = source["factoryIndex"],
+                ["totalMatched"] = matchedCount,
+                ["limit"] = normalizedLimit,
+                ["nextStartId"] = result.Count == normalizedLimit ? lastEntityId + 1 : (object)null,
+                ["filters"] = new JsonObject
+                {
+                    ["status"] = status,
+                    ["protoId"] = protoId,
+                    ["startId"] = startId,
+                    ["x"] = x,
+                    ["y"] = y,
+                    ["z"] = z,
+                    ["radius"] = radius
+                },
+                ["items"] = result
             };
         }
 
@@ -108,8 +193,8 @@ namespace AutomaticDSP.State
                 fullData["inventory"] = CaptureInventory();
                 fullData["forge"] = CaptureForge();
                 fullData["research"] = CaptureResearch();
-                fullData["currentPlanet"] = CaptureCurrentPlanet();
-                fullData["factory"] = CaptureFactory();
+                fullData["localPlanetFactories"] = CaptureLocalPlanetFactories();
+                fullData["localPlanet"] = CaptureLocalPlanet(fullData["localPlanetFactories"] as JsonObject);
                 fullData["preferences"] = CapturePreferences();
                 fullData["statistics"] = CaptureStatistics();
                 fullData["spaceSector"] = CaptureSpaceSector();
@@ -132,6 +217,7 @@ namespace AutomaticDSP.State
                 var snapshot = new StateSnapshot(nextSnapshotId++, gameTick, stateData);
                 latestGameLoaded = Convert.ToBoolean(metadata["gameLoaded"]);
                 latestSnapshot = snapshot;
+                latestLocalPlanetFactories = fullData["localPlanetFactories"] as JsonObject;
                 lastCaptureGameTick = gameTick;
                 inactiveLogged = false;
                 inactiveSnapshotFileChecked = false;
@@ -152,6 +238,7 @@ namespace AutomaticDSP.State
         {
             latestGameLoaded = false;
             latestSnapshot = null;
+            latestLocalPlanetFactories = null;
             lastCaptureGameTick = -1;
 
             if (!inactiveSnapshotFileChecked)
@@ -179,8 +266,7 @@ namespace AutomaticDSP.State
                 ["inventory"] = fullData["inventory"],
                 ["forge"] = fullData["forge"],
                 ["research"] = fullData["research"],
-                ["currentPlanet"] = SectionWithout(fullData["currentPlanet"] as JsonObject, "resources"),
-                ["factory"] = SectionWithout(fullData["factory"] as JsonObject, "entitySample"),
+                ["localPlanet"] = fullData["localPlanet"],
                 ["preferences"] = fullData["preferences"],
                 ["statistics"] = fullData["statistics"],
                 ["spaceSector"] = SpaceSectorOverview(fullData["spaceSector"] as JsonObject),
@@ -256,6 +342,7 @@ namespace AutomaticDSP.State
                 WriteSnapshotFileIfChanged("galaxy.json", fullData["galaxy"]);
                 WriteSnapshotFileIfChanged("transport.stations.json", fullData["galacticTransport"]);
                 WriteSnapshotFileIfChanged("spheres.json", fullData["dysonSpheres"]);
+                WriteSnapshotFileIfChanged("localPlanet.factories.json", fullData["localPlanetFactories"]);
             }
             catch (Exception ex)
             {
@@ -389,8 +476,8 @@ namespace AutomaticDSP.State
                 ["capturedAt"] = DateTimeOffset.UtcNow,
                 ["captureDurationMs"] = 0,
                 ["gameLoaded"] = IsGameLoaded(),
-                ["currentPlanetId"] = GameMain.localPlanet?.id,
-                ["currentStarId"] = GameMain.localStar?.id,
+                ["localPlanetId"] = GameMain.localPlanet?.id,
+                ["localStarId"] = GameMain.localStar?.id,
                 ["schemaVersion"] = 1
             };
         }
@@ -1185,6 +1272,81 @@ namespace AutomaticDSP.State
             catch
             {
                 return false;
+            }
+        }
+
+        private static bool EntityHasStatus(JsonObject item, string expectedStatus)
+        {
+            if (string.Equals(expectedStatus, "all", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (!item.ContainsKey("status") || !(item["status"] is IEnumerable statuses))
+            {
+                return false;
+            }
+
+            foreach (var status in statuses)
+            {
+                if (string.Equals(status?.ToString(), expectedStatus, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool EntityInRadius(JsonObject item, double? x, double? y, double? z, double? radius)
+        {
+            if (!x.HasValue || !y.HasValue || !z.HasValue || !radius.HasValue)
+            {
+                return true;
+            }
+
+            if (!item.ContainsKey("position") || !(item["position"] is JsonObject position))
+            {
+                return false;
+            }
+
+            var dx = JsonDouble(position, "x", 0) - x.Value;
+            var dy = JsonDouble(position, "y", 0) - y.Value;
+            var dz = JsonDouble(position, "z", 0) - z.Value;
+            return dx * dx + dy * dy + dz * dz <= radius.Value * radius.Value;
+        }
+
+        private static int JsonInt(JsonObject data, string key, int defaultValue)
+        {
+            if (data == null || !data.ContainsKey(key) || data[key] == null)
+            {
+                return defaultValue;
+            }
+
+            try
+            {
+                return Convert.ToInt32(data[key]);
+            }
+            catch
+            {
+                return defaultValue;
+            }
+        }
+
+        private static double JsonDouble(JsonObject data, string key, double defaultValue)
+        {
+            if (data == null || !data.ContainsKey(key) || data[key] == null)
+            {
+                return defaultValue;
+            }
+
+            try
+            {
+                return Convert.ToDouble(data[key]);
+            }
+            catch
+            {
+                return defaultValue;
             }
         }
 
@@ -2384,12 +2546,12 @@ namespace AutomaticDSP.State
             };
         }
 
-        private JsonObject CaptureCurrentPlanet()
+        private JsonObject CaptureLocalPlanet(JsonObject factoryDetails)
         {
             var planet = GameMain.localPlanet;
             if (planet == null)
             {
-                return Unavailable("current_planet_missing");
+                return Unavailable("local_planet_missing");
             }
 
             return new JsonObject
@@ -2404,20 +2566,24 @@ namespace AutomaticDSP.State
                 ["windEnergyFactor"] = planet.windStrength,
                 ["solarEnergyFactor"] = planet.luminosity,
                 ["factoryIndex"] = planet.factoryIndex,
-                ["resources"] = CaptureVeins(planet.factory)
+                ["loaded"] = planet.loaded,
+                ["factoryLoaded"] = planet.factoryLoaded,
+                ["factory"] = LocalPlanetFactoryOverview(factoryDetails)
             };
         }
 
-        private JsonObject CaptureFactory()
+        private JsonObject CaptureLocalPlanetFactories()
         {
-            var factory = GameMain.localPlanet?.factory;
+            var planet = GameMain.localPlanet;
+            var factory = planet?.factory;
             if (factory == null)
             {
-                return Unavailable("factory_missing");
+                return Unavailable("local_planet_factory_missing");
             }
 
-            var entitySample = new List<object>();
+            var items = new List<object>();
             var byProto = new Dictionary<int, int>();
+            var byStatus = new Dictionary<string, int>();
             var missingPowerTotal = 0;
             var entityCount = 0;
 
@@ -2433,36 +2599,293 @@ namespace AutomaticDSP.State
                 byProto.TryGetValue(entity.protoId, out var protoCount);
                 byProto[entity.protoId] = protoCount + 1;
 
-                if (entity.powerNodeId == 0)
+                var item = FactoryEntityDetail(factory, entity);
+                foreach (var status in (List<object>)item["status"])
+                {
+                    var key = status.ToString();
+                    byStatus.TryGetValue(key, out var statusCount);
+                    byStatus[key] = statusCount + 1;
+                }
+
+                if (((List<object>)item["status"]).Contains("missingPower"))
                 {
                     missingPowerTotal++;
                 }
 
-                if (entitySample.Count < FactoryEntitySampleLimit)
-                {
-                    entitySample.Add(new JsonObject
-                    {
-                        ["entityId"] = entity.id,
-                        ["protoId"] = entity.protoId,
-                        ["name"] = ItemName(entity.protoId),
-                        ["modelIndex"] = entity.modelIndex,
-                        ["position"] = Vector(entity.pos),
-                        ["powerNodeId"] = entity.powerNodeId
-                    });
-                }
+                items.Add(item);
             }
 
             return new JsonObject
             {
-                ["planetId"] = factory.planetId,
+                ["planetId"] = planet.id,
+                ["planetName"] = planet.displayName,
+                ["factoryIndex"] = planet.factoryIndex,
                 ["entityCount"] = entityCount,
                 ["entityCursor"] = factory.entityCursor,
-                ["entitySample"] = entitySample,
+                ["items"] = items,
                 ["buildingSummary"] = ItemSummary(byProto),
+                ["statusSummary"] = StatusSummary(byStatus),
                 ["missingPowerBuildingCount"] = missingPowerTotal,
                 ["beltCount"] = ReflectionReader.GetInt(factory.cargoTraffic, 0, "beltCursor"),
                 ["sorterCount"] = ReflectionReader.GetInt(factory.cargoTraffic, 0, "sorterCursor")
             };
+        }
+
+        private static JsonObject LocalPlanetFactoryOverview(JsonObject factoryDetails)
+        {
+            if (factoryDetails == null)
+            {
+                return null;
+            }
+
+            return new JsonObject
+            {
+                ["factoryIndex"] = factoryDetails["factoryIndex"],
+                ["planetId"] = factoryDetails["planetId"],
+                ["entityCount"] = factoryDetails["entityCount"],
+                ["entityCursor"] = factoryDetails["entityCursor"],
+                ["buildingSummary"] = factoryDetails["buildingSummary"],
+                ["statusSummary"] = factoryDetails["statusSummary"],
+                ["missingPowerBuildingCount"] = factoryDetails["missingPowerBuildingCount"],
+                ["beltCount"] = factoryDetails["beltCount"],
+                ["sorterCount"] = factoryDetails["sorterCount"]
+            };
+        }
+
+        private static JsonObject FactoryEntityDetail(PlanetFactory factory, EntityData entity)
+        {
+            var status = new List<object>();
+            var component = FactoryEntityComponent(factory, entity, status);
+            if (entity.powerNodeId == 0)
+            {
+                status.Add("missingPower");
+            }
+
+            return new JsonObject
+            {
+                ["entityId"] = entity.id,
+                ["protoId"] = entity.protoId,
+                ["name"] = ItemName(entity.protoId),
+                ["modelIndex"] = entity.modelIndex,
+                ["position"] = Vector(entity.pos),
+                ["powerNodeId"] = entity.powerNodeId,
+                ["beltId"] = entity.beltId,
+                ["minerId"] = entity.minerId,
+                ["inserterId"] = entity.inserterId,
+                ["assemblerId"] = entity.assemblerId,
+                ["fractionatorId"] = entity.fractionatorId,
+                ["ejectorId"] = entity.ejectorId,
+                ["siloId"] = entity.siloId,
+                ["labId"] = entity.labId,
+                ["stationId"] = entity.stationId,
+                ["storageId"] = entity.storageId,
+                ["tankId"] = entity.tankId,
+                ["component"] = component,
+                ["status"] = status
+            };
+        }
+
+        private static JsonObject FactoryEntityComponent(PlanetFactory factory, EntityData entity, List<object> status)
+        {
+            var system = factory.factorySystem;
+            if (system == null)
+            {
+                return null;
+            }
+
+            if (entity.assemblerId > 0 && system.assemblerPool != null && entity.assemblerId < system.assemblerPool.Length)
+            {
+                var assembler = system.assemblerPool[entity.assemblerId];
+                if (assembler.id == entity.assemblerId)
+                {
+                    if (assembler.recipeId <= 0)
+                    {
+                        AddStatus(status, "noRecipe");
+                    }
+
+                    if (HasShortage(assembler.needs, assembler.served))
+                    {
+                        AddStatus(status, "materialShortage");
+                    }
+
+                    if (HasPositive(assembler.produced))
+                    {
+                        AddStatus(status, "outputBlocked");
+                    }
+
+                    return new JsonObject
+                    {
+                        ["type"] = "assembler",
+                        ["id"] = assembler.id,
+                        ["recipeId"] = assembler.recipeId,
+                        ["recipeName"] = RecipeName(assembler.recipeId),
+                        ["replicating"] = assembler.replicating,
+                        ["time"] = assembler.time,
+                        ["speed"] = assembler.speed,
+                        ["needs"] = IntArray(assembler.needs, 32, true),
+                        ["served"] = IntArray(assembler.served, 32, true),
+                        ["produced"] = IntArray(assembler.produced, 32, true)
+                    };
+                }
+            }
+
+            if (entity.labId > 0 && system.labPool != null && entity.labId < system.labPool.Length)
+            {
+                var lab = system.labPool[entity.labId];
+                if (lab.id == entity.labId)
+                {
+                    if (!lab.researchMode && lab.recipeId <= 0)
+                    {
+                        AddStatus(status, "noRecipe");
+                    }
+
+                    if (lab.researchMode && lab.techId <= 0)
+                    {
+                        AddStatus(status, "noResearch");
+                    }
+
+                    if (HasShortage(lab.needs, lab.served))
+                    {
+                        AddStatus(status, "materialShortage");
+                    }
+
+                    if (HasPositive(lab.produced))
+                    {
+                        AddStatus(status, "outputBlocked");
+                    }
+
+                    return new JsonObject
+                    {
+                        ["type"] = "lab",
+                        ["id"] = lab.id,
+                        ["researchMode"] = lab.researchMode,
+                        ["recipeId"] = lab.recipeId,
+                        ["recipeName"] = RecipeName(lab.recipeId),
+                        ["techId"] = lab.techId,
+                        ["techName"] = TechName(lab.techId),
+                        ["replicating"] = lab.replicating,
+                        ["time"] = lab.time,
+                        ["speed"] = lab.speed,
+                        ["needs"] = IntArray(lab.needs, 32, true),
+                        ["served"] = IntArray(lab.served, 32, true),
+                        ["produced"] = IntArray(lab.produced, 32, true),
+                        ["matrixServed"] = IntArray(lab.matrixServed, 32, true)
+                    };
+                }
+            }
+
+            if (entity.minerId > 0 && system.minerPool != null && entity.minerId < system.minerPool.Length)
+            {
+                var miner = system.minerPool[entity.minerId];
+                if (miner.id == entity.minerId)
+                {
+                    if (miner.productCount >= 50)
+                    {
+                        AddStatus(status, "outputBlocked");
+                    }
+
+                    return new JsonObject
+                    {
+                        ["type"] = "miner",
+                        ["id"] = miner.id,
+                        ["minerType"] = miner.type.ToString(),
+                        ["workState"] = miner.workstate.ToString(),
+                        ["productId"] = miner.productId,
+                        ["productName"] = ItemName(miner.productId),
+                        ["productCount"] = miner.productCount,
+                        ["veinCount"] = miner.veinCount,
+                        ["totalVeinAmount"] = miner.totalVeinAmount
+                    };
+                }
+            }
+
+            if (entity.fractionatorId > 0 && system.fractionatorPool != null && entity.fractionatorId < system.fractionatorPool.Length)
+            {
+                var fractionator = system.fractionatorPool[entity.fractionatorId];
+                if (fractionator.id == entity.fractionatorId)
+                {
+                    if (fractionator.fluidInputCount <= 0)
+                    {
+                        AddStatus(status, "materialShortage");
+                    }
+
+                    if (fractionator.productOutputCount >= fractionator.productOutputMax ||
+                        fractionator.fluidOutputCount >= fractionator.fluidOutputMax)
+                    {
+                        AddStatus(status, "outputBlocked");
+                    }
+
+                    return new JsonObject
+                    {
+                        ["type"] = "fractionator",
+                        ["id"] = fractionator.id,
+                        ["isWorking"] = fractionator.isWorking,
+                        ["fluidId"] = fractionator.fluidId,
+                        ["fluidName"] = ItemName(fractionator.fluidId),
+                        ["productId"] = fractionator.productId,
+                        ["productName"] = ItemName(fractionator.productId),
+                        ["fluidInputCount"] = fractionator.fluidInputCount,
+                        ["productOutputCount"] = fractionator.productOutputCount,
+                        ["productOutputMax"] = fractionator.productOutputMax
+                    };
+                }
+            }
+
+            if (entity.ejectorId > 0 && system.ejectorPool != null && entity.ejectorId < system.ejectorPool.Length)
+            {
+                var ejector = system.ejectorPool[entity.ejectorId];
+                if (ejector.id == entity.ejectorId)
+                {
+                    if (ejector.bulletId > 0 && ejector.bulletCount <= 0)
+                    {
+                        AddStatus(status, "materialShortage");
+                    }
+
+                    return new JsonObject
+                    {
+                        ["type"] = "ejector",
+                        ["id"] = ejector.id,
+                        ["bulletId"] = ejector.bulletId,
+                        ["bulletName"] = ItemName(ejector.bulletId),
+                        ["bulletCount"] = ejector.bulletCount,
+                        ["orbitId"] = ejector.orbitId,
+                        ["targetState"] = ejector.targetState.ToString()
+                    };
+                }
+            }
+
+            if (entity.siloId > 0 && system.siloPool != null && entity.siloId < system.siloPool.Length)
+            {
+                var silo = system.siloPool[entity.siloId];
+                if (silo.id == entity.siloId)
+                {
+                    if (silo.bulletId > 0 && silo.bulletCount <= 0)
+                    {
+                        AddStatus(status, "materialShortage");
+                    }
+
+                    return new JsonObject
+                    {
+                        ["type"] = "silo",
+                        ["id"] = silo.id,
+                        ["bulletId"] = silo.bulletId,
+                        ["bulletName"] = ItemName(silo.bulletId),
+                        ["bulletCount"] = silo.bulletCount,
+                        ["hasNode"] = silo.hasNode
+                    };
+                }
+            }
+
+            if (entity.stationId > 0)
+            {
+                return new JsonObject
+                {
+                    ["type"] = "station",
+                    ["id"] = entity.stationId
+                };
+            }
+
+            return null;
         }
 
         private JsonObject CaptureProduction()
@@ -2508,65 +2931,6 @@ namespace AutomaticDSP.State
                 ["consumptionRegister"] = stat == null ? 0 : ReflectionReader.GetLong(stat, 0, "powerConRegister"),
                 ["chargingRegister"] = stat == null ? 0 : ReflectionReader.GetLong(stat, 0, "powerChaRegister"),
                 ["dischargingRegister"] = stat == null ? 0 : ReflectionReader.GetLong(stat, 0, "powerDisRegister")
-            };
-        }
-
-        private static JsonObject CaptureVeins(PlanetFactory factory)
-        {
-            if (factory == null)
-            {
-                return Unavailable("factory_missing");
-            }
-
-            var veins = new List<object>();
-            var byType = new Dictionary<int, int>();
-            var byTypeAmount = new Dictionary<int, long>();
-            var totalVeinCount = 0;
-
-            for (var i = 1; i < factory.veinCursor; i++)
-            {
-                var vein = factory.veinPool[i];
-                if (vein.id != i)
-                {
-                    continue;
-                }
-
-                totalVeinCount++;
-                var type = (int)vein.type;
-                byType.TryGetValue(type, out var count);
-                byType[type] = count + 1;
-                byTypeAmount.TryGetValue(type, out var amount);
-                byTypeAmount[type] = amount + vein.amount;
-
-                if (veins.Count < 200)
-                {
-                    veins.Add(new JsonObject
-                    {
-                        ["id"] = vein.id,
-                        ["type"] = vein.type.ToString(),
-                        ["typeId"] = type,
-                        ["amount"] = vein.amount,
-                        ["position"] = Vector(vein.pos)
-                    });
-                }
-            }
-
-            var summary = new List<object>();
-            foreach (var pair in byType)
-            {
-                summary.Add(new JsonObject
-                {
-                    ["typeId"] = pair.Key,
-                    ["count"] = pair.Value,
-                    ["amount"] = byTypeAmount[pair.Key]
-                });
-            }
-
-            return new JsonObject
-            {
-                ["veinCount"] = totalVeinCount,
-                ["veins"] = veins,
-                ["summary"] = summary
             };
         }
 
@@ -2741,6 +3105,69 @@ namespace AutomaticDSP.State
             {
                 ["items"] = result
             };
+        }
+
+        private static JsonObject StatusSummary(Dictionary<string, int> statuses)
+        {
+            var result = new List<object>();
+            foreach (var pair in statuses)
+            {
+                result.Add(new JsonObject
+                {
+                    ["status"] = pair.Key,
+                    ["count"] = pair.Value
+                });
+            }
+
+            return new JsonObject
+            {
+                ["items"] = result
+            };
+        }
+
+        private static void AddStatus(List<object> statuses, string status)
+        {
+            if (!statuses.Contains(status))
+            {
+                statuses.Add(status);
+            }
+        }
+
+        private static bool HasShortage(int[] needs, int[] served)
+        {
+            if (needs == null || served == null)
+            {
+                return false;
+            }
+
+            var length = Math.Min(needs.Length, served.Length);
+            for (var i = 0; i < length; i++)
+            {
+                if (needs[i] > 0 && served[i] < needs[i])
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool HasPositive(int[] values)
+        {
+            if (values == null)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < values.Length; i++)
+            {
+                if (values[i] > 0)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private static List<object> GasItems(object planet)

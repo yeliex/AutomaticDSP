@@ -62,8 +62,8 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 - `capturedAt`
 - `captureDurationMs`
 - `gameLoaded`
-- `currentPlanetId`
-- `currentStarId`
+- `localPlanetId`
+- `localStarId`
 - `schemaVersion`
 
 ### game
@@ -161,7 +161,7 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 - 研究是否停滞。
 - 停滞原因。
 
-### currentPlanet
+### localPlanet
 
 - 行星 ID。
 - 行星名称。
@@ -170,17 +170,11 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 - 所属恒星 ID。
 - 风能倍率。
 - 太阳能倍率。
-- 资源摘要。
-- 矿脉列表。
-- 油井列表。
-
-### factory
-
-- 当前行星工厂实体数量和实体游标。
-- 有限实体样本，包含实体 ID、原型 ID、名称、模型索引、位置和电力节点。
-- 建筑类型数量汇总。
-- 传送带和分拣器游标数量。
-- 缺电建筑总数。
+- 当前星球工厂加载状态。
+- 当前星球工厂实体数量和实体游标。
+- 当前星球建筑类型数量汇总。
+- 当前星球传送带和分拣器游标数量。
+- 当前星球缺电、缺料、产物缓存等状态汇总。
 
 ### production
 
@@ -230,9 +224,18 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 返回最新状态总览快照，对应 `snapshots/state.json`。
 
 缺失的 section 直接返回 `null`，正常 section 不额外返回 `available: true`。
-大列表明细不放入 `/state`：星系恒星/行星明细写入 `galaxy.json`，物流站明细写入 `transport.stations.json`，戴森球 items 明细写入 `spheres.json`。这些明细文件只在内容变化时更新。
+大列表明细不放入 `/state`：星系恒星/行星明细写入 `galaxy.json`，物流站明细写入 `transport.stations.json`，戴森球 items 明细写入 `spheres.json`，当前星球工厂实体明细写入 `localPlanet.factories.json`。这些明细文件只在内容变化时更新。
 
 第一步不做复杂查询参数。后续可以增加 `sections`、`nearPlayerRadius`、`limit` 等参数。
+
+### GET /state/current-planet/factories
+
+从最近一次当前星球工厂明细快照查询建筑实体列表，不直接读取游戏对象。支持参数：
+
+- `status`：按状态过滤，例如 `missingPower`、`materialShortage`、`outputBlocked`、`noRecipe`。
+- `protoId`：按建筑物品 ID 过滤。
+- `startId` 和 `limit`：按实体 ID 分页。
+- `x`、`y`、`z`、`radius`：按当前位置半径过滤。
 
 ### GET /tasks
 
@@ -290,13 +293,14 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 - `GET /history` 空实现。
 - SQLite 初始化和历史表结构，数据库位于 `BepInEx/cache/AutomaticDSP/data/history.sqlite`。
 - 最新状态总览写入 `BepInEx/cache/AutomaticDSP/snapshots/state.json`。
-- 星系、物流站、戴森球明细分别写入 `galaxy.json`、`transport.stations.json`、`spheres.json`。
+- 星系、物流站、戴森球、当前星球工厂明细分别写入 `galaxy.json`、`transport.stations.json`、`spheres.json`、`localPlanet.factories.json`。
 
 验证：
 
 - 进入游戏后日志显示快照定时生成。
 - `GET /health` 返回最近快照 tick。
-- `GET /state` 至少返回 metadata、game、player、inventory、forge、research、currentPlanet、factory、preferences、statistics、spaceSector、galaxy、dysonSpheres、history、galacticTransport、warningSystem、trashSystem、goalSystem、milestoneSystem、gameAchievement、production、power 的总览统计。
+- `GET /state` 至少返回 metadata、game、player、inventory、forge、research、localPlanet、preferences、statistics、spaceSector、galaxy、dysonSpheres、history、galacticTransport、warningSystem、trashSystem、goalSystem、milestoneSystem、gameAchievement、production、power 的总览统计。
+- `GET /state/current-planet/factories?status=missingPower` 能返回当前星球缺电建筑列表。
 - 不进入游戏时接口返回明确状态，而不是异常。
 - 停留在主菜单或菜单演示时不会保留旧的 `latest.json`、拆分快照或早期 `gameData.json`。
 
@@ -403,7 +407,7 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 - 默认只监听 `127.0.0.1`。
 - 默认端口 `39270`。
 - SQLite 只存历史命令，不存完整游戏快照。
-- 最新 JSON 快照拆分写入 `BepInEx/cache/AutomaticDSP/snapshots/state.json`、`galaxy.json`、`transport.stations.json`、`spheres.json`，用于调试和外部观测。
+- 最新 JSON 快照拆分写入 `BepInEx/cache/AutomaticDSP/snapshots/state.json`、`galaxy.json`、`transport.stations.json`、`spheres.json`、`localPlanet.factories.json`，用于调试和外部观测。
 
 ## 待确认问题
 

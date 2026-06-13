@@ -99,7 +99,7 @@ type Snapshot {
   player: Player!
   inventory: Inventory!
   technology: Technology!
-  currentPlanet: Planet
+  localPlanet: Planet
   planets(where: PlanetWhere, orderBy: PlanetOrder, limit: Int): [Planet!]!
   buildings(where: BuildingWhere, orderBy: BuildingOrder, limit: Int): [Building!]!
   veins(where: VeinWhere, orderBy: VeinOrder, limit: Int): [Vein!]!
@@ -391,15 +391,15 @@ query Queue {
 - `inventory`：背包槽位、空槽、物品列表和按物品汇总。
 - `forge`：`MechaForge` 背包制造状态，包括队列长度、总剩余时间、实际制造速度、`extraItems`、瓶颈物品和每个 `ForgeTask` 的配方、进度、材料、产物、父任务索引。
 - `research`：当前研究、研究队列、hash 速率和停滞状态。
-- `currentPlanet`：当前行星基础信息、风能/太阳能倍率，不包含矿脉明细；当前星球资源从 `galaxy.json` 的行星数据查询。
-- `factory`：当前行星工厂实体数量、建筑类型汇总、传送带/分拣器游标数量和缺电建筑总数，不包含实体样本。
+- `localPlanet`：当前行星基础信息、风能/太阳能倍率和当前星球工厂总览；不包含矿脉明细和建筑实体明细。当前星球资源从 `galaxy.json` 的行星数据查询，当前星球工厂实体从 `localPlanet.factories.json` 或 `/state/current-planet/factories` 查询。
 - `preferences`、`statistics`、`spaceSector`、`galaxy`、`dysonSpheres`、`history`、`galacticTransport`、`warningSystem`、`trashSystem`、`goalSystem`、`milestoneSystem`、`gameAchievement`：来自 `GameMain` 或 `GameMain.data` 的根系统手写摘要；`/state` 只保留总览统计，不暴露 `type/fields/properties` 反射结构。
 - `production`：当前行星生产、消耗和电力统计寄存器的非零项。
 - `power`：电网数量、蓄电量、发电/耗电/充放电统计。
 
 `debug` 和 `data` 不作为 `/state` 字段返回。`/state` 本身是 GameMain 可序列化状态快照：保留 `metadata`，用 `game` 表示运行状态，并把关键根系统拆成独立顶层字段。
 缺失的 section 直接返回 `null`，正常 section 不额外返回 `available: true`。
-拆分文件写入 `BepInEx/cache/AutomaticDSP/snapshots`：`state.json` 对应 `/state` 总览，`galaxy.json` 保存星系恒星/行星明细，`transport.stations.json` 保存物流站明细，`spheres.json` 保存戴森球 items 明细。明细文件只在序列化内容变化时更新。
+拆分文件写入 `BepInEx/cache/AutomaticDSP/snapshots`：`state.json` 对应 `/state` 总览，`galaxy.json` 保存星系恒星/行星明细，`transport.stations.json` 保存物流站明细，`spheres.json` 保存戴森球 items 明细，`localPlanet.factories.json` 保存当前星球工厂实体明细。明细文件只在序列化内容变化时更新。
+`GET /state/current-planet/factories` 从最近一次 `localPlanet.factories.json` 对应的内存快照查询，支持 `status`、`protoId`、`startId`、`limit`、`x/y/z/radius` 过滤。
 到玩家、当前行星或任意实体的距离不写入 `/state`，因为它随天体和玩家位置变化；查询层根据快照中的 `uPosition`、`runtimePosition`、实体位置按需计算。
 派生告警、建造上下文和任务决策辅助不放进 `/state`，后续根据具体建造命令需求设计独立 context/query。
 
@@ -407,7 +407,7 @@ query Queue {
 
 HTTP 接口层只负责读取内存快照、任务状态和历史命令；采样 GameMain、后续执行游戏内命令的控制逻辑都留在游戏主线程服务中，不在 HTTP handler 中直接触碰 DSP 对象。
 
-主菜单、菜单演示或加载界面不生成快照；如果之前存在 `snapshots/latest.json`、`snapshots/state.json`、`snapshots/galaxy.json`、`snapshots/transport.stations.json`、`snapshots/spheres.json`、早期 `dumps/gameData.json` 或早期 `diagnostics/gameMain.json`，进入非对局状态时应清理。
+主菜单、菜单演示或加载界面不生成快照；如果之前存在 `snapshots/latest.json`、`snapshots/state.json`、`snapshots/galaxy.json`、`snapshots/transport.stations.json`、`snapshots/spheres.json`、`snapshots/localPlanet.factories.json`、早期 `dumps/gameData.json` 或早期 `diagnostics/gameMain.json`，进入非对局状态时应清理。
 
 对于建筑、矿脉等数量较多的实体，resolver 必须支持 `limit`，并优先支持空间过滤。
 
