@@ -16,6 +16,15 @@ namespace AutomaticDSP.State
     {
         private const int FactoryEntitySampleLimit = 200;
         private const int SpaceObjectSampleLimit = 128;
+        private static readonly string[] SnapshotFileNames =
+        {
+            "latest.json",
+            "state.json",
+            "galaxy.json",
+            "transport.stations.json",
+            "spheres.json"
+        };
+
         private readonly ManualLogSource log;
         private readonly int snapshotIntervalTicks;
         private readonly JsonSerializerSettings jsonSettings = new JsonSerializerSettings
@@ -90,42 +99,43 @@ namespace AutomaticDSP.State
             var stopwatch = Stopwatch.StartNew();
             try
             {
-                var data = new JsonObject();
+                var fullData = new JsonObject();
                 var metadata = CaptureMetadata(gameTick);
-                data["metadata"] = metadata;
-                data["game"] = CaptureGameState();
-                data["player"] = CapturePlayer();
-                data["mecha"] = CaptureMecha();
-                data["inventory"] = CaptureInventory();
-                data["forge"] = CaptureForge();
-                data["research"] = CaptureResearch();
-                data["currentPlanet"] = CaptureCurrentPlanet();
-                data["factory"] = CaptureFactory();
-                data["preferences"] = CapturePreferences();
-                data["statistics"] = CaptureStatistics();
-                data["spaceSector"] = CaptureSpaceSector();
-                data["galaxy"] = CaptureGalaxy();
-                data["dysonSpheres"] = CaptureDysonSpheres();
-                data["history"] = CaptureHistory();
-                data["galacticTransport"] = CaptureGalacticTransport();
-                data["warningSystem"] = CaptureWarningSystem();
-                data["trashSystem"] = CaptureTrashSystem();
-                data["goalSystem"] = CaptureGoalSystem();
-                data["milestoneSystem"] = CaptureMilestoneSystem();
-                data["gameAchievement"] = CaptureGameAchievement();
-                data["production"] = CaptureProduction();
-                data["power"] = CapturePower();
+                fullData["metadata"] = metadata;
+                fullData["game"] = CaptureGameState();
+                fullData["player"] = CapturePlayer();
+                fullData["mecha"] = CaptureMecha();
+                fullData["inventory"] = CaptureInventory();
+                fullData["forge"] = CaptureForge();
+                fullData["research"] = CaptureResearch();
+                fullData["currentPlanet"] = CaptureCurrentPlanet();
+                fullData["factory"] = CaptureFactory();
+                fullData["preferences"] = CapturePreferences();
+                fullData["statistics"] = CaptureStatistics();
+                fullData["spaceSector"] = CaptureSpaceSector();
+                fullData["galaxy"] = CaptureGalaxy();
+                fullData["dysonSpheres"] = CaptureDysonSpheres();
+                fullData["history"] = CaptureHistory();
+                fullData["galacticTransport"] = CaptureGalacticTransport();
+                fullData["warningSystem"] = CaptureWarningSystem();
+                fullData["trashSystem"] = CaptureTrashSystem();
+                fullData["goalSystem"] = CaptureGoalSystem();
+                fullData["milestoneSystem"] = CaptureMilestoneSystem();
+                fullData["gameAchievement"] = CaptureGameAchievement();
+                fullData["production"] = CaptureProduction();
+                fullData["power"] = CapturePower();
 
                 stopwatch.Stop();
-                ((JsonObject)data["metadata"])["captureDurationMs"] = stopwatch.Elapsed.TotalMilliseconds;
+                ((JsonObject)fullData["metadata"])["captureDurationMs"] = stopwatch.Elapsed.TotalMilliseconds;
 
-                var snapshot = new StateSnapshot(nextSnapshotId++, gameTick, data);
+                var stateData = BuildStateSnapshot(fullData);
+                var snapshot = new StateSnapshot(nextSnapshotId++, gameTick, stateData);
                 latestGameLoaded = Convert.ToBoolean(metadata["gameLoaded"]);
                 latestSnapshot = snapshot;
                 lastCaptureGameTick = gameTick;
                 inactiveLogged = false;
                 inactiveSnapshotFileChecked = false;
-                WriteLatestSnapshot(snapshot);
+                WriteSnapshotFiles(snapshot, fullData);
 
                 if (snapshot.Id == 1 || snapshot.Id % 60 == 0)
                 {
@@ -158,27 +168,125 @@ namespace AutomaticDSP.State
             }
         }
 
-        private void WriteLatestSnapshot(StateSnapshot snapshot)
+        private static JsonObject BuildStateSnapshot(JsonObject fullData)
+        {
+            var state = new JsonObject
+            {
+                ["metadata"] = fullData["metadata"],
+                ["game"] = fullData["game"],
+                ["player"] = fullData["player"],
+                ["mecha"] = fullData["mecha"],
+                ["inventory"] = fullData["inventory"],
+                ["forge"] = fullData["forge"],
+                ["research"] = fullData["research"],
+                ["currentPlanet"] = SectionWithout(fullData["currentPlanet"] as JsonObject, "resources"),
+                ["factory"] = SectionWithout(fullData["factory"] as JsonObject, "entitySample"),
+                ["preferences"] = fullData["preferences"],
+                ["statistics"] = fullData["statistics"],
+                ["spaceSector"] = SpaceSectorOverview(fullData["spaceSector"] as JsonObject),
+                ["galaxy"] = SectionWithout(fullData["galaxy"] as JsonObject, "stars"),
+                ["dysonSpheres"] = SectionWithout(fullData["dysonSpheres"] as JsonObject, "items"),
+                ["history"] = fullData["history"],
+                ["galacticTransport"] = SectionWithout(fullData["galacticTransport"] as JsonObject, "stations"),
+                ["warningSystem"] = fullData["warningSystem"],
+                ["trashSystem"] = fullData["trashSystem"],
+                ["goalSystem"] = fullData["goalSystem"],
+                ["milestoneSystem"] = fullData["milestoneSystem"],
+                ["gameAchievement"] = fullData["gameAchievement"],
+                ["production"] = fullData["production"],
+                ["power"] = fullData["power"]
+            };
+
+            return state;
+        }
+
+        private static JsonObject SpaceSectorOverview(JsonObject section)
+        {
+            var overview = SectionWithout(section, "astros", "galaxyAstros", "enemies", "crafts", "dfHives");
+            if (overview == null)
+            {
+                return null;
+            }
+
+            overview["spaceRuins"] = SectionWithout(overview["spaceRuins"] as JsonObject, "items");
+            return overview;
+        }
+
+        private static JsonObject SectionWithout(JsonObject section, params string[] excludedKeys)
+        {
+            if (section == null)
+            {
+                return null;
+            }
+
+            var result = new JsonObject();
+            foreach (var pair in section)
+            {
+                if (ContainsKey(excludedKeys, pair.Key))
+                {
+                    continue;
+                }
+
+                result[pair.Key] = pair.Value;
+            }
+
+            return result;
+        }
+
+        private static bool ContainsKey(string[] keys, string value)
+        {
+            for (var i = 0; i < keys.Length; i++)
+            {
+                if (keys[i] == value)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private void WriteSnapshotFiles(StateSnapshot snapshot, JsonObject fullData)
         {
             try
             {
                 Directory.CreateDirectory(snapshotDirectory);
-                var snapshotPath = Path.Combine(snapshotDirectory, "latest.json");
-                var tempPath = snapshotPath + ".tmp";
-                var json = JsonConvert.SerializeObject(snapshot.Data, Formatting.Indented, jsonSettings);
-                File.WriteAllText(tempPath, json, Encoding.UTF8);
-
-                if (File.Exists(snapshotPath))
-                {
-                    File.Delete(snapshotPath);
-                }
-
-                File.Move(tempPath, snapshotPath);
+                DeleteSnapshotFile("latest.json");
+                WriteSnapshotFileIfChanged("state.json", snapshot.Data);
+                WriteSnapshotFileIfChanged("galaxy.json", fullData["galaxy"]);
+                WriteSnapshotFileIfChanged("transport.stations.json", fullData["galacticTransport"]);
+                WriteSnapshotFileIfChanged("spheres.json", fullData["dysonSpheres"]);
             }
             catch (Exception ex)
             {
-                log.LogWarning($"Failed to write latest state snapshot: {ex.Message}");
+                log.LogWarning($"Failed to write state snapshot files: {ex.Message}");
             }
+        }
+
+        private void WriteSnapshotFileIfChanged(string fileName, object payload)
+        {
+            var snapshotPath = Path.Combine(snapshotDirectory, fileName);
+            var tempPath = snapshotPath + ".tmp";
+            var json = JsonConvert.SerializeObject(payload, Formatting.Indented, jsonSettings);
+
+            if (File.Exists(snapshotPath) && File.ReadAllText(snapshotPath, Encoding.UTF8) == json)
+            {
+                if (File.Exists(tempPath))
+                {
+                    File.Delete(tempPath);
+                }
+
+                return;
+            }
+
+            File.WriteAllText(tempPath, json, Encoding.UTF8);
+
+            if (File.Exists(snapshotPath))
+            {
+                File.Delete(snapshotPath);
+            }
+
+            File.Move(tempPath, snapshotPath);
         }
 
         private void ClearPersistedSnapshots()
@@ -192,21 +300,29 @@ namespace AutomaticDSP.State
         {
             try
             {
-                var snapshotPath = Path.Combine(snapshotDirectory, "latest.json");
-                var tempPath = snapshotPath + ".tmp";
-                if (File.Exists(tempPath))
+                for (var i = 0; i < SnapshotFileNames.Length; i++)
                 {
-                    File.Delete(tempPath);
-                }
-
-                if (File.Exists(snapshotPath))
-                {
-                    File.Delete(snapshotPath);
+                    DeleteSnapshotFile(SnapshotFileNames[i]);
                 }
             }
             catch (Exception ex)
             {
                 log.LogWarning($"Failed to delete stale state snapshot: {ex.Message}");
+            }
+        }
+
+        private void DeleteSnapshotFile(string fileName)
+        {
+            var snapshotPath = Path.Combine(snapshotDirectory, fileName);
+            var tempPath = snapshotPath + ".tmp";
+            if (File.Exists(tempPath))
+            {
+                File.Delete(tempPath);
+            }
+
+            if (File.Exists(snapshotPath))
+            {
+                File.Delete(snapshotPath);
             }
         }
 

@@ -32,9 +32,12 @@ http://127.0.0.1:39270/
 运行时数据输出到：
 
 - `BepInEx/cache/AutomaticDSP/data/history.sqlite`
-- `BepInEx/cache/AutomaticDSP/snapshots/latest.json`
+- `BepInEx/cache/AutomaticDSP/snapshots/state.json`
+- `BepInEx/cache/AutomaticDSP/snapshots/galaxy.json`
+- `BepInEx/cache/AutomaticDSP/snapshots/transport.stations.json`
+- `BepInEx/cache/AutomaticDSP/snapshots/spheres.json`
 
-`latest.json` 只会在真实对局载入后写入，并使用格式化 JSON 便于调试。停留在主菜单、菜单演示或加载界面时，Mod 会清理旧快照和早期 dump，避免把菜单里的默认游戏对象误当成可观测状态。
+这些快照只会在真实对局载入后写入，并使用格式化 JSON 便于调试。`state.json` 是 `/state` 的总览数据；星系、物流站和戴森球明细拆到独立文件，且只在内容变化时更新。停留在主菜单、菜单演示或加载界面时，Mod 会清理旧快照和早期 dump，避免把菜单里的默认游戏对象误当成可观测状态。
 
 默认游戏目录：
 
