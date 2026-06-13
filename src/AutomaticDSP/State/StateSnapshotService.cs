@@ -14,20 +14,8 @@ namespace AutomaticDSP.State
 {
     internal sealed class StateSnapshotService
     {
-        private const int NearbyBuildingLimit = 200;
-        private const float NearbyBuildingRadius = 160f;
-        private const int NearbyBuildContextResourceLimit = 80;
-        private const float NearbyBuildContextRadius = 160f;
-        private static readonly int[] BuildContextBuildingItemIds =
-        {
-            2001, 2002, 2003,
-            2011, 2012, 2013,
-            2020,
-            2101, 2102, 2106,
-            2201, 2202, 2203, 2204, 2205, 2206, 2210, 2211,
-            2301, 2302, 2303, 2304, 2305, 2306, 2307, 2308, 2309, 2313, 2314,
-            2901
-        };
+        private const int FactoryEntitySampleLimit = 200;
+        private const int SpaceObjectSampleLimit = 128;
         private readonly ManualLogSource log;
         private readonly int snapshotIntervalTicks;
         private readonly JsonSerializerSettings jsonSettings = new JsonSerializerSettings
@@ -109,7 +97,7 @@ namespace AutomaticDSP.State
                 data["player"] = CapturePlayer();
                 data["mecha"] = CaptureMecha();
                 data["inventory"] = CaptureInventory();
-                data["replicator"] = CaptureReplicator();
+                data["forge"] = CaptureForge();
                 data["research"] = CaptureResearch();
                 data["currentPlanet"] = CaptureCurrentPlanet();
                 data["factory"] = CaptureFactory();
@@ -127,8 +115,6 @@ namespace AutomaticDSP.State
                 data["gameAchievement"] = CaptureGameAchievement();
                 data["production"] = CaptureProduction();
                 data["power"] = CapturePower();
-                data["alerts"] = CaptureAlerts(data);
-                data["buildContext"] = CaptureBuildContext(data);
 
                 stopwatch.Stop();
                 ((JsonObject)data["metadata"])["captureDurationMs"] = stopwatch.Elapsed.TotalMilliseconds;
@@ -300,7 +286,6 @@ namespace AutomaticDSP.State
 
             return new JsonObject
             {
-                ["available"] = true,
                 ["name"] = GameMain.gameName,
                 ["creationTime"] = GameMain.creationTime,
                 ["gameTick"] = GameMain.gameTick,
@@ -333,12 +318,10 @@ namespace AutomaticDSP.State
                 },
                 ["galaxy"] = new JsonObject
                 {
-                    ["available"] = galaxy != null,
                     ["starCount"] = ReflectionReader.GetInt(galaxy, 0, "starCount")
                 },
                 ["data"] = new JsonObject
                 {
-                    ["available"] = data != null,
                     ["factoryCount"] = ReflectionReader.GetInt(data, 0, "factoryCount"),
                     ["dysonSphereCount"] = data?.dysonSpheres?.Length ?? 0,
                     ["guideRunning"] = ReflectionReader.GetBool(data, false, "guideRunning"),
@@ -369,7 +352,6 @@ namespace AutomaticDSP.State
 
             return new JsonObject
             {
-                ["available"] = true,
                 ["creationTime"] = MemberValue(desc, "creationTime"),
                 ["creationVersion"] = MemberValue(desc, "creationVersion")?.ToString(),
                 ["galaxyAlgo"] = MemberInt(desc, 0, "galaxyAlgo"),
@@ -406,7 +388,6 @@ namespace AutomaticDSP.State
 
             return new JsonObject
             {
-                ["available"] = true,
                 ["camera"] = new JsonObject
                 {
                     ["uPosition"] = VectorOrNull(MemberValue(prefs, "cameraUPos")),
@@ -524,7 +505,6 @@ namespace AutomaticDSP.State
 
             return new JsonObject
             {
-                ["available"] = true,
                 ["tech"] = new JsonObject
                 {
                     ["hashedThisFrame"] = MemberInt(statistics, 0, "techHashedThisFrame"),
@@ -552,7 +532,6 @@ namespace AutomaticDSP.State
 
             return new JsonObject
             {
-                ["available"] = true,
                 ["currentTechId"] = MemberInt(history, 0, "currentTech"),
                 ["currentTechName"] = TechName(MemberInt(history, 0, "currentTech")),
                 ["techQueueLength"] = MemberInt(history, 0, "techQueueLength"),
@@ -680,7 +659,6 @@ namespace AutomaticDSP.State
             var stars = MemberValue(galaxy, "stars") as Array;
             return new JsonObject
             {
-                ["available"] = true,
                 ["seed"] = MemberInt(galaxy, 0, "seed"),
                 ["starCount"] = MemberInt(galaxy, stars?.Length ?? 0, "starCount"),
                 ["habitableCount"] = MemberInt(galaxy, 0, "habitableCount"),
@@ -689,6 +667,7 @@ namespace AutomaticDSP.State
                 ["unscannedStarCount"] = MemberInt(galaxy, 0, "unscannedStarCount"),
                 ["needAutoScanning"] = MemberBool(galaxy, false, "_need_auto_scanning", "<_need_auto_scanning>k__BackingField"),
                 ["scanPreparing"] = MemberBool(galaxy, false, "scan_preparing", "<scan_preparing>k__BackingField"),
+                ["planetCount"] = TotalPlanetCount(stars),
                 ["astroDataCount"] = CountOf(MemberValue(galaxy, "astrosData")),
                 ["astroFactoryCount"] = CountOf(MemberValue(galaxy, "astrosFactory")),
                 ["graphNodeCount"] = CountOf(MemberValue(galaxy, "graphNodes")),
@@ -719,7 +698,6 @@ namespace AutomaticDSP.State
 
             return new JsonObject
             {
-                ["available"] = true,
                 ["capacity"] = spheres.Length,
                 ["activeCount"] = items.Count,
                 ["items"] = items
@@ -735,16 +713,15 @@ namespace AutomaticDSP.State
             }
 
             var stationPool = MemberValue(transport, "stationPool") as Array;
-            var stationSummary = StationSummaries(stationPool, 64);
+            var stationSummary = StationSummaries(stationPool);
             return new JsonObject
             {
-                ["available"] = true,
                 ["stationCursor"] = MemberInt(transport, 0, "stationCursor"),
                 ["stationCapacity"] = MemberInt(transport, stationPool?.Length ?? 0, "stationCapacity"),
                 ["stationRecycleCursor"] = MemberInt(transport, 0, "stationRecycleCursor"),
                 ["stationCount"] = Convert.ToInt32(stationSummary["count"]),
                 ["stationsByPlanet"] = stationSummary["byPlanet"],
-                ["stationsSample"] = stationSummary["items"],
+                ["stations"] = stationSummary["items"],
                 ["remotePairCount"] = MemberInt(transport, 0, "remotePairCount"),
                 ["stationToStationRouteCount"] = CountOf(MemberValue(transport, "station2stationRoutes")),
                 ["astroToAstroRouteCount"] = CountOf(MemberValue(transport, "astro2astroRoutes")),
@@ -760,30 +737,42 @@ namespace AutomaticDSP.State
                 return Unavailable("space_sector_missing");
             }
 
+            var astros = MemberValue(sector, "astros") as Array;
+            var galaxyAstros = MemberValue(sector, "galaxyAstros") as Array;
+            var enemyPool = MemberValue(sector, "enemyPool") as Array;
+            var craftPool = MemberValue(sector, "craftPool") as Array;
+            var dfHives = MemberValue(sector, "dfHives") as Array;
+            var dfHivesByAstro = MemberValue(sector, "dfHivesByAstro") as Array;
+            var spaceRuins = MemberValue(sector, "spaceRuins");
+
             return new JsonObject
             {
-                ["available"] = true,
                 ["isCombatMode"] = MemberBool(sector, false, "isCombatMode"),
                 ["astroCursor"] = MemberInt(sector, 0, "astroCursor"),
-                ["astroCount"] = ActiveReferenceCount(MemberValue(sector, "astros") as Array),
-                ["galaxyAstroCount"] = ActiveReferenceCount(MemberValue(sector, "galaxyAstros") as Array),
+                ["astroCount"] = ActiveReferenceCount(astros),
+                ["astros"] = SpaceObjectSummaries(astros, SpaceObjectSampleLimit),
+                ["galaxyAstroCount"] = ActiveReferenceCount(galaxyAstros),
+                ["galaxyAstros"] = SpaceObjectSummaries(galaxyAstros, SpaceObjectSampleLimit),
                 ["enemyCount"] = MemberInt(sector, 0, "enemyCount"),
                 ["enemyCursor"] = MemberInt(sector, 0, "enemyCursor"),
-                ["enemyCapacity"] = MemberInt(sector, ArrayLength(MemberValue(sector, "enemyPool") as Array), "enemyCapacity"),
+                ["enemyCapacity"] = MemberInt(sector, ArrayLength(enemyPool), "enemyCapacity"),
                 ["enemyRecycleCursor"] = MemberInt(sector, 0, "enemyRecycleCursor"),
                 ["enemyRecycleCount"] = CountOf(MemberValue(sector, "enemyRecycle")),
+                ["enemies"] = SpaceObjectSummaries(enemyPool, SpaceObjectSampleLimit),
                 ["craftCount"] = MemberInt(sector, 0, "craftCount"),
                 ["craftCursor"] = MemberInt(sector, 0, "craftCursor"),
-                ["craftCapacity"] = MemberInt(sector, ArrayLength(MemberValue(sector, "craftPool") as Array), "craftCapacity"),
+                ["craftCapacity"] = MemberInt(sector, ArrayLength(craftPool), "craftCapacity"),
                 ["craftRecycleCursor"] = MemberInt(sector, 0, "craftRecycleCursor"),
                 ["craftRecycleCount"] = CountOf(MemberValue(sector, "craftRecycle")),
+                ["crafts"] = SpaceObjectSummaries(craftPool, SpaceObjectSampleLimit),
                 ["maxHiveCount"] = MemberInt(sector, 0, "maxHiveCount"),
                 ["lastAliveHiveCount"] = MemberInt(sector, 0, "lastAliveHiveCount"),
-                ["spaceRuins"] = PoolSummary(MemberValue(sector, "spaceRuins")),
-                ["dfHiveCount"] = ActiveReferenceCount(MemberValue(sector, "dfHives") as Array),
-                ["dfHiveByAstroCount"] = ActiveReferenceCount(MemberValue(sector, "dfHivesByAstro") as Array),
-                ["enemyPoolCapacity"] = ArrayLength(MemberValue(sector, "enemyPool") as Array),
-                ["craftPoolCapacity"] = ArrayLength(MemberValue(sector, "craftPool") as Array)
+                ["spaceRuins"] = SpacePoolSummary(spaceRuins, SpaceObjectSampleLimit),
+                ["dfHiveCount"] = ActiveReferenceCount(dfHives),
+                ["dfHiveByAstroCount"] = ActiveReferenceCount(dfHivesByAstro),
+                ["dfHives"] = DfHiveSummaries(dfHives, SpaceObjectSampleLimit),
+                ["enemyPoolCapacity"] = ArrayLength(enemyPool),
+                ["craftPoolCapacity"] = ArrayLength(craftPool)
             };
         }
 
@@ -798,7 +787,6 @@ namespace AutomaticDSP.State
             var warningPool = MemberValue(warnings, "warningPool") as Array;
             return new JsonObject
             {
-                ["available"] = true,
                 ["warningTotalCount"] = MemberInt(warnings, 0, "warningTotalCount"),
                 ["broadcastUIAlertCount"] = MemberInt(warnings, 0, "broadcastUIAlertCount"),
                 ["hasCriticalWarning"] = MemberBool(warnings, false, "hasCriticalWarning"),
@@ -828,7 +816,6 @@ namespace AutomaticDSP.State
 
             return new JsonObject
             {
-                ["available"] = true,
                 ["trashCount"] = MemberInt(trash, 0, "trashCount"),
                 ["randSeed"] = MemberInt(trash, 0, "randSeed"),
                 ["enemyDropBanCount"] = CountOf(MemberValue(trash, "enemyDropBans"))
@@ -845,7 +832,6 @@ namespace AutomaticDSP.State
 
             return new JsonObject
             {
-                ["available"] = true,
                 ["goalCount"] = CountOf(MemberValue(goals, "goalDatas")),
                 ["queueCursor"] = MemberInt(goals, 0, "queueCursor"),
                 ["queuedGoalIds"] = IntArray(MemberValue(goals, "goalQueue") as Array, 64, false)
@@ -862,7 +848,6 @@ namespace AutomaticDSP.State
 
             return new JsonObject
             {
-                ["available"] = true,
                 ["milestoneCount"] = CountOf(MemberValue(milestones, "milestoneDatas"))
             };
         }
@@ -879,7 +864,6 @@ namespace AutomaticDSP.State
 
             return new JsonObject
             {
-                ["available"] = true,
                 ["runtimeAsmLoaded"] = MemberValue(achievement, "runtimeAsm") != null,
                 ["achievementEnable"] = MemberBool(desc, false, "achievementEnable"),
                 ["runtimeDataCount"] = CountOf(MemberValue(achievement, "runtimeDatas")),
@@ -1017,6 +1001,77 @@ namespace AutomaticDSP.State
             }
         }
 
+        private static object NullableInt(object target, params string[] names)
+        {
+            var value = MemberValue(target, names);
+            if (value == null)
+            {
+                return null;
+            }
+
+            try
+            {
+                return Convert.ToInt32(value);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static object NullableDouble(object target, params string[] names)
+        {
+            var value = MemberValue(target, names);
+            if (value == null)
+            {
+                return null;
+            }
+
+            try
+            {
+                return Convert.ToDouble(value);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static object NullableBool(object target, params string[] names)
+        {
+            var value = MemberValue(target, names);
+            if (value == null)
+            {
+                return null;
+            }
+
+            try
+            {
+                return Convert.ToBoolean(value);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static bool IsPositive(object value)
+        {
+            if (value == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                return Convert.ToInt64(value) > 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         private static int CountOf(object value)
         {
             if (value == null)
@@ -1136,7 +1191,132 @@ namespace AutomaticDSP.State
                     ["spectr"] = MemberValue(star, "spectr")?.ToString(),
                     ["planetCount"] = MemberInt(star, planets?.Length ?? 0, "planetCount"),
                     ["luminosity"] = MemberDouble(star, 0, "luminosity"),
-                    ["level"] = MemberDouble(star, 0, "level")
+                    ["level"] = MemberDouble(star, 0, "level"),
+                    ["planets"] = PlanetSummaries(planets)
+                });
+            }
+
+            return result;
+        }
+
+        private static int TotalPlanetCount(Array stars)
+        {
+            if (stars == null)
+            {
+                return 0;
+            }
+
+            var count = 0;
+            for (var i = 0; i < stars.Length; i++)
+            {
+                var star = stars.GetValue(i);
+                var planets = MemberValue(star, "planets") as Array;
+                count += MemberInt(star, planets?.Length ?? 0, "planetCount");
+            }
+
+            return count;
+        }
+
+        private static List<object> PlanetSummaries(Array planets)
+        {
+            var result = new List<object>();
+            if (planets == null)
+            {
+                return result;
+            }
+
+            for (var i = 0; i < planets.Length; i++)
+            {
+                var planet = planets.GetValue(i);
+                if (planet == null)
+                {
+                    continue;
+                }
+
+                var waterItemId = MemberInt(planet, 0, "waterItemId");
+                result.Add(new JsonObject
+                {
+                    ["id"] = MemberInt(planet, 0, "id"),
+                    ["index"] = MemberInt(planet, i, "index"),
+                    ["number"] = MemberInt(planet, 0, "number"),
+                    ["orbitIndex"] = MemberInt(planet, 0, "orbitIndex"),
+                    ["orbitAround"] = MemberInt(planet, 0, "orbitAround"),
+                    ["orbitAroundPlanetId"] = MemberInt(MemberValue(planet, "orbitAroundPlanet"), 0, "id"),
+                    ["name"] = MemberString(planet, "name"),
+                    ["displayName"] = MemberString(planet, "displayName"),
+                    ["type"] = MemberValue(planet, "type")?.ToString(),
+                    ["typeString"] = MemberString(planet, "typeString"),
+                    ["singularity"] = MemberValue(planet, "singularity")?.ToString(),
+                    ["themeId"] = MemberInt(planet, 0, "theme"),
+                    ["themeName"] = ThemeName(MemberInt(planet, 0, "theme")),
+                    ["algoId"] = MemberInt(planet, 0, "algoId"),
+                    ["style"] = MemberInt(planet, 0, "style"),
+                    ["seed"] = MemberInt(planet, 0, "seed"),
+                    ["infoSeed"] = MemberInt(planet, 0, "infoSeed"),
+                    ["radius"] = MemberDouble(planet, 0, "radius"),
+                    ["realRadius"] = MemberDouble(planet, 0, "realRadius"),
+                    ["orbitRadius"] = MemberDouble(planet, 0, "orbitRadius"),
+                    ["sunDistance"] = MemberDouble(planet, 0, "sunDistance"),
+                    ["orbitalPeriod"] = MemberDouble(planet, 0, "orbitalPeriod"),
+                    ["rotationPeriod"] = MemberDouble(planet, 0, "rotationPeriod"),
+                    ["windStrength"] = MemberDouble(planet, 0, "windStrength"),
+                    ["luminosity"] = MemberDouble(planet, 0, "luminosity"),
+                    ["landPercent"] = MemberDouble(planet, 0, "landPercent"),
+                    ["waterItemId"] = waterItemId,
+                    ["waterName"] = ItemName(waterItemId),
+                    ["waterHeight"] = MemberDouble(planet, 0, "waterHeight"),
+                    ["factoryIndex"] = MemberInt(planet, -1, "factoryIndex"),
+                    ["hasFactory"] = MemberValue(planet, "factory") != null,
+                    ["loaded"] = MemberBool(planet, false, "loaded"),
+                    ["wanted"] = MemberBool(planet, false, "wanted"),
+                    ["loading"] = MemberBool(planet, false, "loading"),
+                    ["scanning"] = MemberBool(planet, false, "scanning"),
+                    ["scanned"] = MemberBool(planet, false, "scanned"),
+                    ["factoryLoaded"] = MemberBool(planet, false, "factoryLoaded"),
+                    ["factoryLoading"] = MemberBool(planet, false, "factoryLoading"),
+                    ["uPosition"] = VectorOrNull(MemberValue(planet, "uPosition")),
+                    ["runtimePosition"] = VectorOrNull(MemberValue(planet, "runtimePosition")),
+                    ["birthPoint"] = VectorOrNull(MemberValue(planet, "birthPoint")),
+                    ["veinGroupCount"] = CountOf(MemberValue(planet, "runtimeVeinGroups", "veinGroups")),
+                    ["veins"] = PlanetVeinGroups(planet),
+                    ["gasItems"] = GasItems(planet)
+                });
+            }
+
+            return result;
+        }
+
+        private static List<object> PlanetVeinGroups(object planet)
+        {
+            var result = new List<object>();
+            var groups = MemberValue(planet, "runtimeVeinGroups", "veinGroups") as Array;
+            if (groups == null)
+            {
+                return result;
+            }
+
+            for (var i = 0; i < groups.Length; i++)
+            {
+                var group = groups.GetValue(i);
+                if (group == null)
+                {
+                    continue;
+                }
+
+                var count = MemberInt(group, 0, "count");
+                var amount = MemberLong(group, 0, "amount");
+                if (count <= 0 && amount <= 0)
+                {
+                    continue;
+                }
+
+                result.Add(new JsonObject
+                {
+                    ["index"] = i,
+                    ["type"] = MemberValue(group, "type")?.ToString(),
+                    ["typeId"] = Convert.ToInt32(MemberValue(group, "type") ?? 0),
+                    ["count"] = count,
+                    ["amount"] = amount
                 });
             }
 
@@ -1146,24 +1326,160 @@ namespace AutomaticDSP.State
         private static JsonObject DysonSphereSummary(object sphere, int index)
         {
             var stars = GameMain.galaxy == null ? null : MemberValue(GameMain.galaxy, "stars") as Array;
-            var star = stars != null && index >= 0 && index < stars.Length ? stars.GetValue(index) : null;
+            var star = MemberValue(sphere, "starData") ?? (stars != null && index >= 0 && index < stars.Length ? stars.GetValue(index) : null);
             var layers = FirstArray(sphere, "layersIdBased", "layersSorted", "layerPool", "layers");
+            var swarm = MemberValue(sphere, "swarm");
 
             return new JsonObject
             {
                 ["index"] = index,
                 ["starId"] = star == null ? 0 : MemberInt(star, 0, "id"),
                 ["starName"] = star == null ? null : MemberString(star, "displayName", "name"),
+                ["randSeed"] = MemberInt(sphere, 0, "randSeed"),
+                ["defOrbitRadius"] = MemberDouble(sphere, 0, "defOrbitRadius"),
+                ["minOrbitRadius"] = MemberDouble(sphere, 0, "minOrbitRadius"),
+                ["maxOrbitRadius"] = MemberDouble(sphere, 0, "maxOrbitRadius"),
+                ["avoidOrbitRadius"] = MemberDouble(sphere, 0, "avoidOrbitRadius"),
+                ["grossRadius"] = MemberDouble(sphere, 0, "grossRadius"),
+                ["gravity"] = MemberDouble(sphere, 0, "gravity"),
                 ["layerCount"] = ActiveReferenceCount(layers),
-                ["nodeCount"] = MemberInt(sphere, 0, "nodeCursor", "nodeCount"),
-                ["frameCount"] = MemberInt(sphere, 0, "frameCursor", "frameCount"),
-                ["shellCount"] = MemberInt(sphere, 0, "shellCursor", "shellCount"),
-                ["rocketCount"] = MemberInt(sphere, 0, "rocketCursor", "rocketCount"),
-                ["sailCount"] = MemberInt(sphere, 0, "swarmSailCount", "sailCount")
+                ["rocketCount"] = MemberInt(sphere, 0, "rocketCount"),
+                ["rocketCursor"] = MemberInt(sphere, 0, "rocketCursor"),
+                ["rocketCapacity"] = MemberInt(sphere, 0, "rocketCapacity"),
+                ["rocketRecycleCursor"] = MemberInt(sphere, 0, "rocketRecycleCursor"),
+                ["autoNodeCount"] = MemberInt(sphere, 0, "autoNodeCount"),
+                ["nrdCursor"] = MemberInt(sphere, 0, "nrdCursor"),
+                ["nrdCapacity"] = MemberInt(sphere, 0, "nrdCapacity"),
+                ["energyGenCurrentTick"] = MemberLong(sphere, 0, "energyGenCurrentTick"),
+                ["energyGenOriginalCurrentTick"] = MemberLong(sphere, 0, "energyGenOriginalCurrentTick"),
+                ["energyReqCurrentTick"] = MemberLong(sphere, 0, "energyReqCurrentTick"),
+                ["energyGenPerSail"] = MemberLong(sphere, 0, "energyGenPerSail"),
+                ["energyGenPerNode"] = MemberLong(sphere, 0, "energyGenPerNode"),
+                ["energyGenPerFrame"] = MemberLong(sphere, 0, "energyGenPerFrame"),
+                ["energyGenPerShell"] = MemberLong(sphere, 0, "energyGenPerShell"),
+                ["energyRespCoef"] = MemberDouble(sphere, 0, "energyRespCoef"),
+                ["totalNodeCount"] = MemberInt(sphere, 0, "totalNodeCount"),
+                ["totalConstructedNodeCount"] = MemberInt(sphere, 0, "totalConstructedNodeCount"),
+                ["totalFrameCount"] = MemberInt(sphere, 0, "totalFrameCount"),
+                ["totalConstructedFrameCount"] = MemberInt(sphere, 0, "totalConstructedFrameCount"),
+                ["totalStructurePoint"] = MemberInt(sphere, 0, "totalStructurePoint"),
+                ["totalConstructedStructurePoint"] = MemberInt(sphere, 0, "totalConstructedStructurePoint"),
+                ["totalCellPoint"] = MemberLong(sphere, 0, "totalCellPoint"),
+                ["totalConstructedCellPoint"] = MemberLong(sphere, 0, "totalConstructedCellPoint"),
+                ["layers"] = DysonLayerSummaries(layers),
+                ["swarm"] = DysonSwarmSummary(swarm)
             };
         }
 
-        private static JsonObject StationSummaries(Array stationPool, int limit)
+        private static List<object> DysonLayerSummaries(Array layers)
+        {
+            var result = new List<object>();
+            if (layers == null)
+            {
+                return result;
+            }
+
+            for (var i = 0; i < layers.Length; i++)
+            {
+                var layer = layers.GetValue(i);
+                if (layer == null)
+                {
+                    continue;
+                }
+
+                var id = MemberInt(layer, 0, "id");
+                if (id <= 0)
+                {
+                    continue;
+                }
+
+                result.Add(new JsonObject
+                {
+                    ["id"] = id,
+                    ["orbitRadius"] = MemberDouble(layer, 0, "orbitRadius"),
+                    ["orbitAngularSpeed"] = MemberDouble(layer, 0, "orbitAngularSpeed"),
+                    ["currentAngle"] = MemberDouble(layer, 0, "currentAngle"),
+                    ["drawingGridMode"] = MemberInt(layer, 0, "drawingGridMode"),
+                    ["paintingGridMode"] = MemberInt(layer, 0, "paintingGridMode"),
+                    ["nodeCount"] = MemberInt(layer, 0, "nodeCount"),
+                    ["nodeCursor"] = MemberInt(layer, 0, "nodeCursor"),
+                    ["nodeCapacity"] = MemberInt(layer, 0, "nodeCapacity"),
+                    ["nodeRecycleCursor"] = MemberInt(layer, 0, "nodeRecycleCursor"),
+                    ["frameCount"] = MemberInt(layer, 0, "frameCount"),
+                    ["frameCursor"] = MemberInt(layer, 0, "frameCursor"),
+                    ["frameCapacity"] = MemberInt(layer, 0, "frameCapacity"),
+                    ["frameRecycleCursor"] = MemberInt(layer, 0, "frameRecycleCursor"),
+                    ["shellCount"] = MemberInt(layer, 0, "shellCount"),
+                    ["shellCursor"] = MemberInt(layer, 0, "shellCursor"),
+                    ["shellCapacity"] = MemberInt(layer, 0, "shellCapacity"),
+                    ["shellRecycleCursor"] = MemberInt(layer, 0, "shellRecycleCursor"),
+                    ["energyGenCurrentTick"] = MemberLong(layer, 0, "energyGenCurrentTick")
+                });
+            }
+
+            return result;
+        }
+
+        private static JsonObject DysonSwarmSummary(object swarm)
+        {
+            if (swarm == null)
+            {
+                return null;
+            }
+
+            return new JsonObject
+            {
+                ["sailCount"] = MemberInt(swarm, 0, "sailCount"),
+                ["sailCursor"] = MemberInt(swarm, 0, "sailCursor"),
+                ["sailCapacity"] = MemberInt(swarm, 0, "sailCapacity"),
+                ["sailRecycleCursor"] = MemberInt(swarm, 0, "sailRecycleCursor"),
+                ["orbitCursor"] = MemberInt(swarm, 0, "orbitCursor"),
+                ["orbitCapacity"] = MemberInt(swarm, 0, "orbitCapacity"),
+                ["expiryCursor"] = MemberInt(swarm, 0, "expiryCursor"),
+                ["expiryEnding"] = MemberInt(swarm, 0, "expiryEnding"),
+                ["absorbCursor"] = MemberInt(swarm, 0, "absorbCursor"),
+                ["absorbEnding"] = MemberInt(swarm, 0, "absorbEnding"),
+                ["bulletCursor"] = MemberInt(swarm, 0, "bulletCursor"),
+                ["bulletCapacity"] = MemberInt(swarm, 0, "bulletCapacity"),
+                ["bulletRecycleCursor"] = MemberInt(swarm, 0, "bulletRecycleCursor"),
+                ["energyGenCurrentTick"] = MemberLong(swarm, 0, "energyGenCurrentTick"),
+                ["grossRadius"] = MemberDouble(swarm, 0, "grossRadius"),
+                ["eternal"] = MemberBool(swarm, false, "eternal"),
+                ["orbits"] = SailOrbitSummaries(MemberValue(swarm, "orbits") as Array)
+            };
+        }
+
+        private static List<object> SailOrbitSummaries(Array orbits)
+        {
+            var result = new List<object>();
+            if (orbits == null)
+            {
+                return result;
+            }
+
+            for (var i = 0; i < orbits.Length; i++)
+            {
+                var orbit = orbits.GetValue(i);
+                var id = MemberInt(orbit, 0, "id");
+                if (id <= 0)
+                {
+                    continue;
+                }
+
+                result.Add(new JsonObject
+                {
+                    ["id"] = id,
+                    ["radius"] = MemberDouble(orbit, 0, "radius"),
+                    ["count"] = MemberInt(orbit, 0, "count"),
+                    ["enabled"] = MemberBool(orbit, false, "enabled"),
+                    ["rotation"] = QuaternionOrNull(MemberValue(orbit, "rotation"))
+                });
+            }
+
+            return result;
+        }
+
+        private static JsonObject StationSummaries(Array stationPool)
         {
             var items = new List<object>();
             var byPlanet = new Dictionary<int, int>();
@@ -1190,17 +1506,48 @@ namespace AutomaticDSP.State
                     byPlanet.TryGetValue(planetId, out var planetCount);
                     byPlanet[planetId] = planetCount + 1;
 
-                    if (items.Count < limit)
+                    items.Add(new JsonObject
                     {
-                        items.Add(new JsonObject
-                        {
-                            ["index"] = i,
-                            ["id"] = id,
-                            ["planetId"] = planetId,
-                            ["gid"] = MemberInt(station, 0, "gid"),
-                            ["isStellar"] = MemberBool(station, false, "isStellar")
-                        });
-                    }
+                        ["index"] = i,
+                        ["id"] = id,
+                        ["gid"] = MemberInt(station, 0, "gid"),
+                        ["entityId"] = MemberInt(station, 0, "entityId"),
+                        ["planetId"] = planetId,
+                        ["pcId"] = MemberInt(station, 0, "pcId"),
+                        ["minerId"] = MemberInt(station, 0, "minerId"),
+                        ["isStellar"] = MemberBool(station, false, "isStellar"),
+                        ["isCollector"] = MemberBool(station, false, "isCollector"),
+                        ["isVeinCollector"] = MemberBool(station, false, "isVeinCollector"),
+                        ["energy"] = MemberLong(station, 0, "energy"),
+                        ["energyPerTick"] = MemberLong(station, 0, "energyPerTick"),
+                        ["energyMax"] = MemberLong(station, 0, "energyMax"),
+                        ["warperCount"] = MemberInt(station, 0, "warperCount"),
+                        ["warperMaxCount"] = MemberInt(station, 0, "warperMaxCount"),
+                        ["idleDroneCount"] = MemberInt(station, 0, "idleDroneCount"),
+                        ["workDroneCount"] = MemberInt(station, 0, "workDroneCount"),
+                        ["idleShipCount"] = MemberInt(station, 0, "idleShipCount"),
+                        ["workShipCount"] = MemberInt(station, 0, "workShipCount"),
+                        ["renderShipCount"] = MemberInt(station, 0, "renderShipCount"),
+                        ["localPairCount"] = MemberInt(station, 0, "localPairCount"),
+                        ["remotePairTotalCount"] = MemberInt(station, 0, "remotePairTotalCount"),
+                        ["tripRangeDrones"] = MemberDouble(station, 0, "tripRangeDrones"),
+                        ["tripRangeShips"] = MemberDouble(station, 0, "tripRangeShips"),
+                        ["includeOrbitCollector"] = MemberBool(station, false, "includeOrbitCollector"),
+                        ["warpEnableDist"] = MemberDouble(station, 0, "warpEnableDist"),
+                        ["warperNecessary"] = MemberBool(station, false, "warperNecessary"),
+                        ["deliveryDrones"] = MemberInt(station, 0, "deliveryDrones"),
+                        ["deliveryShips"] = MemberInt(station, 0, "deliveryShips"),
+                        ["pilerCount"] = MemberInt(station, 0, "pilerCount"),
+                        ["droneAutoReplenish"] = MemberBool(station, false, "droneAutoReplenish"),
+                        ["shipAutoReplenish"] = MemberBool(station, false, "shipAutoReplenish"),
+                        ["routePriority"] = MemberValue(station, "routePriority")?.ToString(),
+                        ["storage"] = StationStorage(MemberValue(station, "storage") as Array),
+                        ["slots"] = StationSlots(MemberValue(station, "slots") as Array),
+                        ["localPairs"] = StationPairs(MemberValue(station, "localPairs") as Array),
+                        ["remotePairs"] = StationPairs(MemberValue(station, "remotePairs") as Array),
+                        ["needs"] = IntArray(MemberValue(station, "needs") as Array, 128, false),
+                        ["collections"] = StationCollections(station)
+                    });
                 }
             }
 
@@ -1219,6 +1566,294 @@ namespace AutomaticDSP.State
                 ["count"] = count,
                 ["items"] = items,
                 ["byPlanet"] = byPlanetItems
+            };
+        }
+
+        private static List<object> StationStorage(Array storage)
+        {
+            var result = new List<object>();
+            if (storage == null)
+            {
+                return result;
+            }
+
+            for (var i = 0; i < storage.Length; i++)
+            {
+                var store = storage.GetValue(i);
+                var itemId = MemberInt(store, 0, "itemId");
+                if (itemId <= 0)
+                {
+                    continue;
+                }
+
+                result.Add(new JsonObject
+                {
+                    ["index"] = i,
+                    ["itemId"] = itemId,
+                    ["name"] = ItemName(itemId),
+                    ["count"] = MemberInt(store, 0, "count"),
+                    ["inc"] = MemberInt(store, 0, "inc"),
+                    ["localOrder"] = MemberInt(store, 0, "localOrder"),
+                    ["remoteOrder"] = MemberInt(store, 0, "remoteOrder"),
+                    ["max"] = MemberInt(store, 0, "max"),
+                    ["keepMode"] = MemberInt(store, 0, "keepMode"),
+                    ["keepIncRatio"] = MemberDouble(store, 0, "keepIncRatio"),
+                    ["localLogic"] = MemberValue(store, "localLogic")?.ToString(),
+                    ["remoteLogic"] = MemberValue(store, "remoteLogic")?.ToString()
+                });
+            }
+
+            return result;
+        }
+
+        private static List<object> StationSlots(Array slots)
+        {
+            var result = new List<object>();
+            if (slots == null)
+            {
+                return result;
+            }
+
+            for (var i = 0; i < slots.Length; i++)
+            {
+                var slot = slots.GetValue(i);
+                var beltId = MemberInt(slot, 0, "beltId");
+                var storageIdx = MemberInt(slot, 0, "storageIdx");
+                if (beltId == 0 && storageIdx == 0)
+                {
+                    continue;
+                }
+
+                result.Add(new JsonObject
+                {
+                    ["index"] = i,
+                    ["dir"] = MemberValue(slot, "dir")?.ToString(),
+                    ["beltId"] = beltId,
+                    ["storageIdx"] = storageIdx,
+                    ["counter"] = MemberInt(slot, 0, "counter")
+                });
+            }
+
+            return result;
+        }
+
+        private static List<object> StationPairs(Array pairs)
+        {
+            var result = new List<object>();
+            if (pairs == null)
+            {
+                return result;
+            }
+
+            for (var i = 0; i < pairs.Length; i++)
+            {
+                var pair = pairs.GetValue(i);
+                var supplyId = MemberInt(pair, 0, "supplyId");
+                var demandId = MemberInt(pair, 0, "demandId");
+                if (supplyId == 0 && demandId == 0)
+                {
+                    continue;
+                }
+
+                result.Add(new JsonObject
+                {
+                    ["index"] = i,
+                    ["supplyId"] = supplyId,
+                    ["supplyIndex"] = MemberInt(pair, 0, "supplyIndex"),
+                    ["demandId"] = demandId,
+                    ["demandIndex"] = MemberInt(pair, 0, "demandIndex"),
+                    ["runtimeState"] = MemberInt(pair, 0, "runtimeState")
+                });
+            }
+
+            return result;
+        }
+
+        private static List<object> StationCollections(object station)
+        {
+            var result = new List<object>();
+            var ids = MemberValue(station, "collectionIds") as Array;
+            var perTick = MemberValue(station, "collectionPerTick") as Array;
+            var current = MemberValue(station, "currentCollections") as Array;
+            if (ids == null)
+            {
+                return result;
+            }
+
+            for (var i = 0; i < ids.Length; i++)
+            {
+                var itemId = ArrayInt(ids, i, 0);
+                if (itemId <= 0)
+                {
+                    continue;
+                }
+
+                result.Add(new JsonObject
+                {
+                    ["itemId"] = itemId,
+                    ["name"] = ItemName(itemId),
+                    ["perTick"] = ArrayDouble(perTick, i, 0),
+                    ["current"] = ArrayDouble(current, i, 0)
+                });
+            }
+
+            return result;
+        }
+
+        private static List<object> SpaceObjectSummaries(Array pool, int limit)
+        {
+            var result = new List<object>();
+            if (pool == null)
+            {
+                return result;
+            }
+
+            for (var i = 0; i < pool.Length && result.Count < limit; i++)
+            {
+                var item = pool.GetValue(i);
+                if (item == null)
+                {
+                    continue;
+                }
+
+                var id = NullableInt(item, "id");
+                var astroId = NullableInt(item, "astroId", "hiveAstroId");
+                var protoId = NullableInt(item, "protoId");
+                var modelIndex = NullableInt(item, "modelIndex");
+                if (!IsPositive(id) && !IsPositive(astroId) && !IsPositive(protoId) && !IsPositive(modelIndex))
+                {
+                    continue;
+                }
+
+                result.Add(new JsonObject
+                {
+                    ["index"] = i,
+                    ["id"] = id,
+                    ["type"] = MemberValue(item, "type", "prototype")?.ToString(),
+                    ["protoId"] = protoId,
+                    ["modelIndex"] = modelIndex,
+                    ["astroId"] = astroId,
+                    ["originAstroId"] = NullableInt(item, "originAstroId"),
+                    ["parentId"] = NullableInt(item, "parentId"),
+                    ["owner"] = NullableInt(item, "owner"),
+                    ["port"] = NullableInt(item, "port"),
+                    ["stateFlags"] = NullableInt(item, "stateFlags"),
+                    ["dynamic"] = NullableBool(item, "dynamic"),
+                    ["isSpace"] = NullableBool(item, "isSpace"),
+                    ["localized"] = NullableBool(item, "localized"),
+                    ["uRadius"] = NullableDouble(item, "uRadius"),
+                    ["position"] = VectorOrNull(MemberValue(item, "uPos", "uPosition", "pos", "position")),
+                    ["nextPosition"] = VectorOrNull(MemberValue(item, "uPosNext", "uPositionNext")),
+                    ["rotation"] = QuaternionOrNull(MemberValue(item, "uRot", "uRotation", "rot", "rotation")),
+                    ["nextRotation"] = QuaternionOrNull(MemberValue(item, "uRotNext", "uRotationNext")),
+                    ["velocity"] = VectorOrNull(MemberValue(item, "vel", "velocity"))
+                });
+            }
+
+            return result;
+        }
+
+        private static JsonObject SpacePoolSummary(object pool, int limit)
+        {
+            if (pool == null)
+            {
+                return null;
+            }
+
+            var buffer = MemberValue(pool, "buffer") as Array;
+            return new JsonObject
+            {
+                ["count"] = NullableInt(pool, "count", "Count"),
+                ["cursor"] = NullableInt(pool, "cursor"),
+                ["capacity"] = NullableInt(pool, "capacity") ?? (object)ArrayLength(buffer),
+                ["recycleCursor"] = NullableInt(pool, "recycleCursor"),
+                ["items"] = SpaceObjectSummaries(buffer, limit)
+            };
+        }
+
+        private static List<object> DfHiveSummaries(Array hives, int limit)
+        {
+            var result = new List<object>();
+            if (hives == null)
+            {
+                return result;
+            }
+
+            var visited = new HashSet<object>();
+            for (var i = 0; i < hives.Length && result.Count < limit; i++)
+            {
+                var hive = hives.GetValue(i);
+                while (hive != null && result.Count < limit && visited.Add(hive))
+                {
+                    var star = MemberValue(hive, "starData");
+                    result.Add(new JsonObject
+                    {
+                        ["index"] = i,
+                        ["starId"] = NullableInt(star, "id"),
+                        ["starIndex"] = NullableInt(star, "index"),
+                        ["starName"] = MemberString(star, "displayName", "name"),
+                        ["hiveAstroId"] = NullableInt(hive, "hiveAstroId"),
+                        ["hiveOrbitIndex"] = NullableInt(hive, "hiveOrbitIndex"),
+                        ["orbitRadius"] = NullableDouble(hive, "orbitRadius"),
+                        ["seed"] = NullableInt(hive, "seed"),
+                        ["rtseed"] = NullableInt(hive, "rtseed"),
+                        ["ticks"] = NullableInt(hive, "ticks"),
+                        ["realized"] = NullableBool(hive, "realized"),
+                        ["isEmpty"] = NullableBool(hive, "isEmpty"),
+                        ["isPreview"] = NullableBool(hive, "isPreview"),
+                        ["isLocal"] = NullableBool(hive, "isLocal"),
+                        ["localPlayerInRange"] = NullableBool(hive, "local_player_in_range"),
+                        ["playerUPosition"] = VectorOrNull(MemberValue(hive, "player_upos")),
+                        ["playerLocalPosition"] = VectorOrNull(MemberValue(hive, "player_local_pos")),
+                        ["rootEnemyId"] = NullableInt(hive, "rootEnemyId"),
+                        ["idleRelayCount"] = NullableInt(hive, "idleRelayCount"),
+                        ["idleTinderCount"] = NullableInt(hive, "idleTinderCount"),
+                        ["tindersArrivingInTransit"] = NullableInt(hive, "tindersArrivingInTransit"),
+                        ["currentIncomingAttackingUnitCount"] = NullableInt(hive, "currentIncomingAttackingUnitCount"),
+                        ["currentIncomingAttackingPlayerUnitCount"] = NullableInt(hive, "currentIncomingAttackingPlayerUnitCount"),
+                        ["currentIncomingAssaultingUnitCount"] = NullableInt(hive, "currentIncomingAssaultingUnitCount"),
+                        ["currentReadyLancerCount"] = NullableInt(hive, "currentReadyLancerCount"),
+                        ["matterProduction"] = NullableInt(hive, "matterProduction"),
+                        ["matterConsumption"] = NullableInt(hive, "matterConsumption"),
+                        ["evolve"] = EvolveSummary(MemberValue(hive, "evolve")),
+                        ["builders"] = PoolSummary(MemberValue(hive, "builders")),
+                        ["cores"] = PoolSummary(MemberValue(hive, "cores")),
+                        ["nodes"] = PoolSummary(MemberValue(hive, "nodes")),
+                        ["connectors"] = PoolSummary(MemberValue(hive, "connectors")),
+                        ["replicators"] = PoolSummary(MemberValue(hive, "replicators")),
+                        ["gammas"] = PoolSummary(MemberValue(hive, "gammas")),
+                        ["turrets"] = PoolSummary(MemberValue(hive, "turrets")),
+                        ["relays"] = PoolSummary(MemberValue(hive, "relays")),
+                        ["tinders"] = PoolSummary(MemberValue(hive, "tinders")),
+                        ["units"] = PoolSummary(MemberValue(hive, "units"))
+                    });
+
+                    hive = MemberValue(hive, "nextSibling");
+                }
+            }
+
+            return result;
+        }
+
+        private static JsonObject EvolveSummary(object evolve)
+        {
+            if (evolve == null)
+            {
+                return null;
+            }
+
+            return new JsonObject
+            {
+                ["level"] = NullableInt(evolve, "level"),
+                ["expl"] = NullableInt(evolve, "expl"),
+                ["expf"] = NullableInt(evolve, "expf"),
+                ["expp"] = NullableInt(evolve, "expp"),
+                ["threat"] = NullableInt(evolve, "threat"),
+                ["maxThreat"] = NullableInt(evolve, "maxThreat"),
+                ["waves"] = NullableInt(evolve, "waves"),
+                ["waveTicks"] = NullableInt(evolve, "waveTicks"),
+                ["waveAsmTicks"] = NullableInt(evolve, "waveAsmTicks"),
+                ["rankBase"] = NullableInt(evolve, "rankBase")
             };
         }
 
@@ -1263,7 +1898,6 @@ namespace AutomaticDSP.State
 
             return new JsonObject
             {
-                ["available"] = true,
                 ["count"] = CountOf(pool),
                 ["cursor"] = MemberInt(pool, 0, "cursor")
             };
@@ -1365,7 +1999,6 @@ namespace AutomaticDSP.State
 
             return new JsonObject
             {
-                ["available"] = true,
                 ["planetId"] = GameMain.localPlanet?.id,
                 ["starId"] = GameMain.localStar?.id,
                 ["position"] = Vector(player.position),
@@ -1390,7 +2023,6 @@ namespace AutomaticDSP.State
             var construction = mecha.constructionModule;
             return new JsonObject
             {
-                ["available"] = true,
                 ["hp"] = mecha.hp,
                 ["hpMax"] = mecha.hpMaxApplied,
                 ["coreEnergy"] = mecha.coreEnergy,
@@ -1470,7 +2102,6 @@ namespace AutomaticDSP.State
 
             return new JsonObject
             {
-                ["available"] = true,
                 ["size"] = package.size,
                 ["gridLength"] = gridLength,
                 ["slotCount"] = slotCount,
@@ -1483,24 +2114,120 @@ namespace AutomaticDSP.State
             };
         }
 
-        private JsonObject CaptureReplicator()
+        private JsonObject CaptureForge()
         {
             var forge = GameMain.mainPlayer?.mecha?.forge;
             if (forge == null)
             {
-                return Unavailable("replicator_missing");
+                return Unavailable("forge_missing");
             }
 
+            var tasks = MemberValue(forge, "tasks") as IEnumerable;
             return new JsonObject
             {
-                ["available"] = true,
-                ["queue"] = new List<object>(),
-                ["current"] = null,
-                ["notes"] = new List<object>
-                {
-                    "Replicator queue shape is reserved for M2 field mapping."
-                }
+                ["taskCount"] = CountOf(MemberValue(forge, "tasks")),
+                ["totalTime"] = MemberDouble(forge, 0, "totalTime"),
+                ["actualReplicateSpeed"] = MemberDouble(forge, 0, "actualReplicateSpeed"),
+                ["extraItems"] = ItemBundleItems(MemberValue(forge, "extraItems")),
+                ["bottleneckItems"] = IntEnumerable(MemberValue(forge, "bottleneckItems") as IEnumerable, 128),
+                ["tasks"] = ForgeTaskSummaries(tasks)
             };
+        }
+
+        private static List<object> ForgeTaskSummaries(IEnumerable tasks)
+        {
+            var result = new List<object>();
+            if (tasks == null)
+            {
+                return result;
+            }
+
+            var index = 0;
+            foreach (var task in tasks)
+            {
+                if (task != null)
+                {
+                    result.Add(ForgeTaskSummary(task, index));
+                }
+
+                index++;
+            }
+
+            return result;
+        }
+
+        private static JsonObject ForgeTaskSummary(object task, int index)
+        {
+            var recipeId = MemberInt(task, 0, "recipeId");
+            var tick = MemberInt(task, 0, "tick");
+            var tickSpend = MemberInt(task, 0, "tickSpend");
+            return new JsonObject
+            {
+                ["index"] = index,
+                ["recipeId"] = recipeId,
+                ["recipeName"] = RecipeName(recipeId),
+                ["count"] = MemberInt(task, 0, "count"),
+                ["tick"] = tick,
+                ["tickSpend"] = tickSpend,
+                ["progress"] = tickSpend <= 0 ? 0 : Math.Min(1.0, (double)tick / tickSpend),
+                ["parentTaskIndex"] = MemberInt(task, -1, "parentTaskIndex"),
+                ["itemEnough"] = MemberBool(task, false, "itemEnough"),
+                ["productEmpty"] = MemberBool(task, false, "productEmpty"),
+                ["ingredients"] = ForgeIngredients(task),
+                ["products"] = ForgeProducts(task)
+            };
+        }
+
+        private static List<object> ForgeIngredients(object task)
+        {
+            var result = new List<object>();
+            var itemIds = MemberValue(task, "itemIds") as Array;
+            var itemCounts = MemberValue(task, "itemCounts") as Array;
+            var served = MemberValue(task, "served") as Array;
+            if (itemIds == null)
+            {
+                return result;
+            }
+
+            for (var i = 0; i < itemIds.Length; i++)
+            {
+                var itemId = ArrayInt(itemIds, i, 0);
+                result.Add(new JsonObject
+                {
+                    ["itemId"] = itemId,
+                    ["name"] = ItemName(itemId),
+                    ["required"] = ArrayInt(itemCounts, i, 0),
+                    ["served"] = ArrayInt(served, i, 0)
+                });
+            }
+
+            return result;
+        }
+
+        private static List<object> ForgeProducts(object task)
+        {
+            var result = new List<object>();
+            var productIds = MemberValue(task, "productIds") as Array;
+            var productCounts = MemberValue(task, "productCounts") as Array;
+            var produced = MemberValue(task, "produced") as Array;
+            if (productIds == null)
+            {
+                return result;
+            }
+
+            for (var i = 0; i < productIds.Length; i++)
+            {
+                var itemId = ArrayInt(productIds, i, 0);
+                result.Add(new JsonObject
+                {
+                    ["itemId"] = itemId,
+                    ["name"] = ItemName(itemId),
+                    ["count"] = ArrayInt(productCounts, i, 0),
+                    ["produced"] = ArrayInt(produced, i, 0)
+                });
+            }
+
+            return result;
         }
 
         private JsonObject CaptureResearch()
@@ -1532,7 +2259,6 @@ namespace AutomaticDSP.State
             var currentTech = ReflectionReader.GetInt(history, 0, "currentTech");
             return new JsonObject
             {
-                ["available"] = true,
                 ["currentTechId"] = currentTech,
                 ["currentTechName"] = TechName(currentTech),
                 ["queueLength"] = ReflectionReader.GetInt(history, queue.Count, "techQueueLength"),
@@ -1552,7 +2278,6 @@ namespace AutomaticDSP.State
 
             return new JsonObject
             {
-                ["available"] = true,
                 ["id"] = planet.id,
                 ["name"] = planet.displayName,
                 ["type"] = planet.typeString,
@@ -1575,12 +2300,12 @@ namespace AutomaticDSP.State
                 return Unavailable("factory_missing");
             }
 
-            var playerPosition = GameMain.mainPlayer != null ? GameMain.mainPlayer.position : Vector3.zero;
-            var buildings = new List<object>();
+            var entitySample = new List<object>();
             var byProto = new Dictionary<int, int>();
-            var missingPower = 0;
+            var missingPowerTotal = 0;
+            var entityCount = 0;
 
-            for (var i = 1; i < factory.entityCursor && buildings.Count < NearbyBuildingLimit; i++)
+            for (var i = 1; i < factory.entityCursor; i++)
             {
                 var entity = factory.entityPool[i];
                 if (entity.id != i)
@@ -1588,39 +2313,37 @@ namespace AutomaticDSP.State
                     continue;
                 }
 
+                entityCount++;
                 byProto.TryGetValue(entity.protoId, out var protoCount);
                 byProto[entity.protoId] = protoCount + 1;
 
-                if ((entity.pos - playerPosition).sqrMagnitude > NearbyBuildingRadius * NearbyBuildingRadius)
-                {
-                    continue;
-                }
-
                 if (entity.powerNodeId == 0)
                 {
-                    missingPower++;
+                    missingPowerTotal++;
                 }
 
-                buildings.Add(new JsonObject
+                if (entitySample.Count < FactoryEntitySampleLimit)
                 {
-                    ["entityId"] = entity.id,
-                    ["protoId"] = entity.protoId,
-                    ["name"] = ItemName(entity.protoId),
-                    ["modelIndex"] = entity.modelIndex,
-                    ["position"] = Vector(entity.pos),
-                    ["powerNodeId"] = entity.powerNodeId
-                });
+                    entitySample.Add(new JsonObject
+                    {
+                        ["entityId"] = entity.id,
+                        ["protoId"] = entity.protoId,
+                        ["name"] = ItemName(entity.protoId),
+                        ["modelIndex"] = entity.modelIndex,
+                        ["position"] = Vector(entity.pos),
+                        ["powerNodeId"] = entity.powerNodeId
+                    });
+                }
             }
 
             return new JsonObject
             {
-                ["available"] = true,
                 ["planetId"] = factory.planetId,
+                ["entityCount"] = entityCount,
                 ["entityCursor"] = factory.entityCursor,
-                ["nearbyRadius"] = NearbyBuildingRadius,
-                ["nearbyBuildings"] = buildings,
+                ["entitySample"] = entitySample,
                 ["buildingSummary"] = ItemSummary(byProto),
-                ["missingPowerBuildingCountNearby"] = missingPower,
+                ["missingPowerBuildingCount"] = missingPowerTotal,
                 ["beltCount"] = ReflectionReader.GetInt(factory.cargoTraffic, 0, "beltCursor"),
                 ["sorterCount"] = ReflectionReader.GetInt(factory.cargoTraffic, 0, "sorterCursor")
             };
@@ -1636,7 +2359,6 @@ namespace AutomaticDSP.State
 
             return new JsonObject
             {
-                ["available"] = true,
                 ["productRegister"] = NonZeroArray(ReflectionReader.Get(stat, "productRegister") as Array, 120),
                 ["consumeRegister"] = NonZeroArray(ReflectionReader.Get(stat, "consumeRegister") as Array, 120),
                 ["powerGenerationRegister"] = ReflectionReader.GetLong(stat, 0, "powerGenRegister"),
@@ -1664,363 +2386,12 @@ namespace AutomaticDSP.State
 
             return new JsonObject
             {
-                ["available"] = true,
                 ["networkCount"] = powerSystem.netCursor,
                 ["storedEnergy"] = storedEnergy,
                 ["generationRegister"] = stat == null ? 0 : ReflectionReader.GetLong(stat, 0, "powerGenRegister"),
                 ["consumptionRegister"] = stat == null ? 0 : ReflectionReader.GetLong(stat, 0, "powerConRegister"),
                 ["chargingRegister"] = stat == null ? 0 : ReflectionReader.GetLong(stat, 0, "powerChaRegister"),
                 ["dischargingRegister"] = stat == null ? 0 : ReflectionReader.GetLong(stat, 0, "powerDisRegister")
-            };
-        }
-
-        private static JsonObject CaptureAlerts(JsonObject data)
-        {
-            var alerts = new List<object>();
-            var power = data["power"] as JsonObject;
-            var research = data["research"] as JsonObject;
-
-            if (power != null && Convert.ToBoolean(power["available"]) &&
-                Convert.ToInt64(power["generationRegister"]) < Convert.ToInt64(power["consumptionRegister"]))
-            {
-                alerts.Add(new JsonObject
-                {
-                    ["type"] = "power_shortage",
-                    ["severity"] = "warning"
-                });
-            }
-
-            if (research != null && Convert.ToBoolean(research["available"]) &&
-                Convert.ToBoolean(research["isStalled"]))
-            {
-                alerts.Add(new JsonObject
-                {
-                    ["type"] = "research_stalled",
-                    ["severity"] = "info"
-                });
-            }
-
-            return new JsonObject
-            {
-                ["items"] = alerts
-            };
-        }
-
-        private static JsonObject CaptureBuildContext(JsonObject data)
-        {
-            var player = GameMain.mainPlayer;
-            var planet = GameMain.localPlanet;
-            var factory = planet?.factory;
-            var playerPosition = player != null ? player.position : Vector3.zero;
-            var inventoryCounts = CaptureInventoryCounts();
-
-            return new JsonObject
-            {
-                ["available"] = true,
-                ["scope"] = new JsonObject
-                {
-                    ["planetId"] = planet?.id,
-                    ["planetName"] = planet?.displayName,
-                    ["factoryAvailable"] = factory != null,
-                    ["playerOnPlanet"] = planet != null,
-                    ["buildRange"] = player?.mecha?.buildArea,
-                    ["nearbyRadius"] = NearbyBuildContextRadius
-                },
-                ["inventoryBuildings"] = CaptureBuildInventory(inventoryCounts),
-                ["craftableBuildings"] = CaptureCraftableBuildings(inventoryCounts),
-                ["basicProductionLine"] = CaptureBasicProductionLineNeeds(inventoryCounts),
-                ["nearbyResources"] = factory == null ? Unavailable("factory_missing") : CaptureNearbyResources(factory, playerPosition),
-                ["nearbyInfrastructure"] = factory == null ? Unavailable("factory_missing") : CaptureNearbyInfrastructure(factory, playerPosition),
-                ["power"] = CapturePowerContext(data)
-            };
-        }
-
-        private static Dictionary<int, int> CaptureInventoryCounts()
-        {
-            var result = new Dictionary<int, int>();
-            var package = GameMain.mainPlayer?.package;
-            if (package == null)
-            {
-                return result;
-            }
-
-            for (var i = 0; i < package.size; i++)
-            {
-                var grid = package.grids[i];
-                if (grid.itemId <= 0 || grid.count <= 0)
-                {
-                    continue;
-                }
-
-                result.TryGetValue(grid.itemId, out var count);
-                result[grid.itemId] = count + grid.count;
-            }
-
-            return result;
-        }
-
-        private static JsonObject CaptureBuildInventory(Dictionary<int, int> inventoryCounts)
-        {
-            var items = new List<object>();
-            var categoryCounts = new Dictionary<string, int>();
-
-            foreach (var itemId in BuildContextBuildingItemIds)
-            {
-                var proto = LDB.items.Select(itemId);
-                if (proto == null)
-                {
-                    continue;
-                }
-
-                var count = InventoryCount(inventoryCounts, itemId);
-                var category = BuildCategory(itemId);
-                if (count > 0)
-                {
-                    categoryCounts.TryGetValue(category, out var categoryCount);
-                    categoryCounts[category] = categoryCount + count;
-                }
-
-                items.Add(new JsonObject
-                {
-                    ["itemId"] = itemId,
-                    ["name"] = proto.name,
-                    ["category"] = category,
-                    ["count"] = count,
-                    ["stackSize"] = proto.StackSize,
-                    ["canBuild"] = proto.CanBuild
-                });
-            }
-
-            return new JsonObject
-            {
-                ["items"] = items,
-                ["categories"] = CategorySummary(categoryCounts)
-            };
-        }
-
-        private static JsonObject CaptureCraftableBuildings(Dictionary<int, int> inventoryCounts)
-        {
-            var items = new List<object>();
-            foreach (var itemId in BuildContextBuildingItemIds)
-            {
-                var proto = LDB.items.Select(itemId);
-                var recipe = proto?.handcraft;
-                if (proto == null || recipe == null)
-                {
-                    continue;
-                }
-
-                items.Add(new JsonObject
-                {
-                    ["itemId"] = itemId,
-                    ["name"] = proto.name,
-                    ["category"] = BuildCategory(itemId),
-                    ["handcraft"] = CaptureHandcraft(recipe, itemId, inventoryCounts)
-                });
-            }
-
-            return new JsonObject
-            {
-                ["items"] = items
-            };
-        }
-
-        private static JsonObject CaptureHandcraft(RecipeProto recipe, int resultItemId, Dictionary<int, int> inventoryCounts)
-        {
-            var missing = new List<object>();
-            var ingredients = new List<object>();
-            var canSatisfyMaterials = true;
-            var itemIds = recipe.Items ?? new int[0];
-            var itemCounts = recipe.ItemCounts ?? new int[0];
-
-            for (var i = 0; i < itemIds.Length && i < itemCounts.Length; i++)
-            {
-                var itemId = itemIds[i];
-                var required = itemCounts[i];
-                var available = InventoryCount(inventoryCounts, itemId);
-                var shortfall = Math.Max(0, required - available);
-                if (shortfall > 0)
-                {
-                    canSatisfyMaterials = false;
-                    missing.Add(new JsonObject
-                    {
-                        ["itemId"] = itemId,
-                        ["name"] = ItemName(itemId),
-                        ["count"] = shortfall
-                    });
-                }
-
-                ingredients.Add(new JsonObject
-                {
-                    ["itemId"] = itemId,
-                    ["name"] = ItemName(itemId),
-                    ["required"] = required,
-                    ["available"] = available,
-                    ["missing"] = shortfall
-                });
-            }
-
-            var unlocked = RecipeUnlocked(recipe.ID);
-            return new JsonObject
-            {
-                ["available"] = true,
-                ["recipeId"] = recipe.ID,
-                ["recipeName"] = recipe.name,
-                ["handcraft"] = recipe.Handcraft,
-                ["unlocked"] = unlocked,
-                ["craftableNow"] = recipe.Handcraft && unlocked && canSatisfyMaterials,
-                ["resultCount"] = RecipeResultCount(recipe, resultItemId),
-                ["timeSpend"] = recipe.TimeSpend,
-                ["ingredients"] = ingredients,
-                ["missingItems"] = missing
-            };
-        }
-
-        private static JsonObject CaptureBasicProductionLineNeeds(Dictionary<int, int> inventoryCounts)
-        {
-            var requirements = new List<object>();
-            var canStartFromInventory = true;
-            AddRequirement(requirements, ref canStartFromInventory, inventoryCounts, 2301, 1);
-            AddRequirement(requirements, ref canStartFromInventory, inventoryCounts, 2302, 1);
-            AddRequirement(requirements, ref canStartFromInventory, inventoryCounts, 2201, 2);
-            AddRequirement(requirements, ref canStartFromInventory, inventoryCounts, 2001, 12);
-            AddRequirement(requirements, ref canStartFromInventory, inventoryCounts, 2011, 3);
-
-            return new JsonObject
-            {
-                ["target"] = "iron_ingot_starter_line",
-                ["canStartFromInventory"] = canStartFromInventory,
-                ["requirements"] = requirements
-            };
-        }
-
-        private static void AddRequirement(List<object> requirements, ref bool canStartFromInventory, Dictionary<int, int> inventoryCounts, int itemId, int required)
-        {
-            var available = InventoryCount(inventoryCounts, itemId);
-            var missing = Math.Max(0, required - available);
-            if (missing > 0)
-            {
-                canStartFromInventory = false;
-            }
-
-            requirements.Add(new JsonObject
-            {
-                ["itemId"] = itemId,
-                ["name"] = ItemName(itemId),
-                ["required"] = required,
-                ["available"] = available,
-                ["missing"] = missing
-            });
-        }
-
-        private static JsonObject CaptureNearbyResources(PlanetFactory factory, Vector3 playerPosition)
-        {
-            var resources = new List<object>();
-            var byType = new Dictionary<int, int>();
-            var byTypeAmount = new Dictionary<int, long>();
-
-            for (var i = 1; i < factory.veinCursor; i++)
-            {
-                var vein = factory.veinPool[i];
-                if (vein.id != i)
-                {
-                    continue;
-                }
-
-                var distance = (vein.pos - playerPosition).magnitude;
-                if (distance > NearbyBuildContextRadius)
-                {
-                    continue;
-                }
-
-                var type = (int)vein.type;
-                byType.TryGetValue(type, out var count);
-                byType[type] = count + 1;
-                byTypeAmount.TryGetValue(type, out var amount);
-                byTypeAmount[type] = amount + vein.amount;
-
-                if (resources.Count < NearbyBuildContextResourceLimit)
-                {
-                    resources.Add(new JsonObject
-                    {
-                        ["id"] = vein.id,
-                        ["type"] = vein.type.ToString(),
-                        ["typeId"] = type,
-                        ["amount"] = vein.amount,
-                        ["distance"] = distance,
-                        ["position"] = Vector(vein.pos)
-                    });
-                }
-            }
-
-            return new JsonObject
-            {
-                ["available"] = true,
-                ["radius"] = NearbyBuildContextRadius,
-                ["resources"] = resources,
-                ["summary"] = ResourceSummary(byType, byTypeAmount)
-            };
-        }
-
-        private static JsonObject CaptureNearbyInfrastructure(PlanetFactory factory, Vector3 playerPosition)
-        {
-            var categoryCounts = new Dictionary<string, int>();
-            var entityCount = 0;
-            var missingPowerCount = 0;
-
-            for (var i = 1; i < factory.entityCursor; i++)
-            {
-                var entity = factory.entityPool[i];
-                if (entity.id != i)
-                {
-                    continue;
-                }
-
-                if ((entity.pos - playerPosition).sqrMagnitude > NearbyBuildContextRadius * NearbyBuildContextRadius)
-                {
-                    continue;
-                }
-
-                entityCount++;
-                var category = BuildCategory(entity.protoId);
-                categoryCounts.TryGetValue(category, out var count);
-                categoryCounts[category] = count + 1;
-
-                if (entity.powerNodeId == 0)
-                {
-                    missingPowerCount++;
-                }
-            }
-
-            return new JsonObject
-            {
-                ["available"] = true,
-                ["radius"] = NearbyBuildContextRadius,
-                ["entityCount"] = entityCount,
-                ["missingPowerBuildingCount"] = missingPowerCount,
-                ["categories"] = CategorySummary(categoryCounts)
-            };
-        }
-
-        private static JsonObject CapturePowerContext(JsonObject data)
-        {
-            var power = data["power"] as JsonObject;
-            if (power == null || !JsonBool(power, "available"))
-            {
-                return Unavailable("power_unavailable");
-            }
-
-            var generation = JsonLong(power, "generationRegister");
-            var consumption = JsonLong(power, "consumptionRegister");
-            return new JsonObject
-            {
-                ["available"] = true,
-                ["networkCount"] = JsonLong(power, "networkCount"),
-                ["storedEnergy"] = JsonLong(power, "storedEnergy"),
-                ["generationRegister"] = generation,
-                ["consumptionRegister"] = consumption,
-                ["satisfactionRatio"] = consumption <= 0 ? 1.0 : Math.Min(1.0, (double)generation / consumption),
-                ["hasShortage"] = consumption > generation
             };
         }
 
@@ -2207,145 +2578,6 @@ namespace AutomaticDSP.State
             }
         }
 
-        private static int InventoryCount(Dictionary<int, int> inventoryCounts, int itemId)
-        {
-            inventoryCounts.TryGetValue(itemId, out var count);
-            return count;
-        }
-
-        private static bool RecipeUnlocked(int recipeId)
-        {
-            try
-            {
-                return recipeId > 0 && GameMain.history != null && GameMain.history.RecipeUnlocked(recipeId);
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        private static int RecipeResultCount(RecipeProto recipe, int resultItemId)
-        {
-            var results = recipe.Results ?? new int[0];
-            var resultCounts = recipe.ResultCounts ?? new int[0];
-            for (var i = 0; i < results.Length && i < resultCounts.Length; i++)
-            {
-                if (results[i] == resultItemId)
-                {
-                    return resultCounts[i];
-                }
-            }
-
-            return 0;
-        }
-
-        private static string BuildCategory(int itemId)
-        {
-            if (itemId >= 2001 && itemId <= 2003)
-            {
-                return "belt";
-            }
-
-            if (itemId >= 2011 && itemId <= 2013)
-            {
-                return "sorter";
-            }
-
-            if (itemId == 2020)
-            {
-                return "splitter";
-            }
-
-            if (itemId == 2101 || itemId == 2102 || itemId == 2106)
-            {
-                return "storage";
-            }
-
-            if (itemId >= 2201 && itemId <= 2211)
-            {
-                return "power";
-            }
-
-            if (itemId == 2301)
-            {
-                return "miner";
-            }
-
-            if (itemId == 2302)
-            {
-                return "smelter";
-            }
-
-            if (itemId >= 2303 && itemId <= 2305)
-            {
-                return "assembler";
-            }
-
-            if (itemId == 2306 || itemId == 2307)
-            {
-                return "resource_collector";
-            }
-
-            if (itemId == 2308 || itemId == 2309 || itemId == 2314)
-            {
-                return "fluid_production";
-            }
-
-            if (itemId == 2313)
-            {
-                return "spray_coater";
-            }
-
-            if (itemId == 2901)
-            {
-                return "lab";
-            }
-
-            return "other";
-        }
-
-        private static List<object> CategorySummary(Dictionary<string, int> categoryCounts)
-        {
-            var result = new List<object>();
-            foreach (var pair in categoryCounts)
-            {
-                result.Add(new JsonObject
-                {
-                    ["category"] = pair.Key,
-                    ["count"] = pair.Value
-                });
-            }
-
-            return result;
-        }
-
-        private static List<object> ResourceSummary(Dictionary<int, int> byType, Dictionary<int, long> byTypeAmount)
-        {
-            var result = new List<object>();
-            foreach (var pair in byType)
-            {
-                result.Add(new JsonObject
-                {
-                    ["typeId"] = pair.Key,
-                    ["count"] = pair.Value,
-                    ["amount"] = byTypeAmount[pair.Key]
-                });
-            }
-
-            return result;
-        }
-
-        private static bool JsonBool(JsonObject data, string key)
-        {
-            return data.ContainsKey(key) && Convert.ToBoolean(data[key]);
-        }
-
-        private static long JsonLong(JsonObject data, string key)
-        {
-            return data.ContainsKey(key) && data[key] != null ? Convert.ToInt64(data[key]) : 0;
-        }
-
         private static int TotalItemCount(Dictionary<int, int> items)
         {
             var total = 0;
@@ -2395,6 +2627,160 @@ namespace AutomaticDSP.State
             };
         }
 
+        private static List<object> GasItems(object planet)
+        {
+            var result = new List<object>();
+            var itemIds = MemberValue(planet, "gasItems") as Array;
+            var speeds = MemberValue(planet, "gasSpeeds") as Array;
+            var heatValues = MemberValue(planet, "gasHeatValues") as Array;
+            if (itemIds == null)
+            {
+                return result;
+            }
+
+            for (var i = 0; i < itemIds.Length; i++)
+            {
+                var itemId = ArrayInt(itemIds, i, 0);
+                if (itemId <= 0)
+                {
+                    continue;
+                }
+
+                result.Add(new JsonObject
+                {
+                    ["itemId"] = itemId,
+                    ["name"] = ItemName(itemId),
+                    ["speed"] = ArrayDouble(speeds, i, 0),
+                    ["heatValue"] = ArrayDouble(heatValues, i, 0)
+                });
+            }
+
+            return result;
+        }
+
+        private static List<object> ItemBundleItems(object bundle)
+        {
+            var result = new List<object>();
+            var items = MemberValue(bundle, "items") as IEnumerable;
+            if (items == null)
+            {
+                return result;
+            }
+
+            foreach (var pair in items)
+            {
+                var itemId = MemberInt(pair, 0, "Key", "key");
+                result.Add(new JsonObject
+                {
+                    ["itemId"] = itemId,
+                    ["name"] = ItemName(itemId),
+                    ["count"] = MemberInt(pair, 0, "Value", "value")
+                });
+            }
+
+            return result;
+        }
+
+        private static List<object> IntEnumerable(IEnumerable values, int limit)
+        {
+            var result = new List<object>();
+            if (values == null)
+            {
+                return result;
+            }
+
+            foreach (var value in values)
+            {
+                if (result.Count >= limit)
+                {
+                    break;
+                }
+
+                try
+                {
+                    var itemId = Convert.ToInt32(value);
+                    result.Add(new JsonObject
+                    {
+                        ["itemId"] = itemId,
+                        ["name"] = ItemName(itemId)
+                    });
+                }
+                catch
+                {
+                }
+            }
+
+            return result;
+        }
+
+        private static int ArrayInt(Array array, int index, int defaultValue)
+        {
+            if (array == null || index < 0 || index >= array.Length)
+            {
+                return defaultValue;
+            }
+
+            try
+            {
+                return Convert.ToInt32(array.GetValue(index));
+            }
+            catch
+            {
+                return defaultValue;
+            }
+        }
+
+        private static double ArrayDouble(Array array, int index, double defaultValue)
+        {
+            if (array == null || index < 0 || index >= array.Length)
+            {
+                return defaultValue;
+            }
+
+            try
+            {
+                return Convert.ToDouble(array.GetValue(index));
+            }
+            catch
+            {
+                return defaultValue;
+            }
+        }
+
+        private static string ThemeName(int themeId)
+        {
+            if (themeId <= 0)
+            {
+                return null;
+            }
+
+            try
+            {
+                return LDB.themes.Select(themeId)?.displayName;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static string RecipeName(int recipeId)
+        {
+            if (recipeId <= 0)
+            {
+                return null;
+            }
+
+            try
+            {
+                return LDB.recipes.Select(recipeId)?.name;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
         private static string ItemName(int itemId)
         {
             if (itemId <= 0)
@@ -2431,11 +2817,7 @@ namespace AutomaticDSP.State
 
         private static JsonObject Unavailable(string reason)
         {
-            return new JsonObject
-            {
-                ["available"] = false,
-                ["reason"] = reason
-            };
+            return null;
         }
 
         private static JsonObject Vector(Vector3 value)

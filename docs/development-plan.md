@@ -138,11 +138,12 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 - 建筑类物品数量摘要。
 - 基础材料数量摘要。
 
-### replicator
+### forge
 
 - 背包制造队列。
-- 当前正在制造的物品。
-- 每个队列项的 `recipeId`、`itemId`、剩余数量、预计完成 tick。
+- 制造总剩余时间和当前实际制造速度。
+- `MechaForge.extraItems` 与瓶颈物品列表。
+- 每个队列项的 `recipeId`、配方名称、剩余次数、tick 进度、父任务索引、材料投入和产物缓存。
 - 当前可手搓配方摘要。
 - 关键建筑是否可手搓。
 - 关键配方材料缺口。
@@ -172,20 +173,14 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 - 资源摘要。
 - 矿脉列表。
 - 油井列表。
-- 玩家附近资源点。
-- 玩家附近可建造区域摘要。
 
 ### factory
 
-- 当前行星建筑数量摘要。
-- 玩家附近建筑列表。
-- 矿机、熔炉、制造台、电塔、仓储、研究站等建筑摘要。
-- 传送带数量和堵塞摘要。
-- 分拣器数量和异常摘要。
-- 无配方设施数量。
-- 缺电设施数量。
-- 输出堵塞设施数量。
-- 输入不足设施数量。
+- 当前行星工厂实体数量和实体游标。
+- 有限实体样本，包含实体 ID、原型 ID、名称、模型索引、位置和电力节点。
+- 建筑类型数量汇总。
+- 传送带和分拣器游标数量。
+- 缺电建筑总数。
 
 ### production
 
@@ -207,28 +202,6 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 - 玩家所在电网状态。
 - 缺电建筑摘要。
 - 燃料发电设施状态摘要。
-
-### alerts
-
-- 缺电。
-- 缺材料。
-- 产物堵塞。
-- 建筑无配方。
-- 研究停滞。
-- 背包制造停滞。
-- 玩家不在行星上。
-- 建造无人机忙。
-- 当前星球没有目标资源。
-
-### buildContext
-
-- 当前建造作用域：行星、工厂可用性、玩家是否在行星上、建造范围、附近扫描半径。
-- 背包内关键建筑数量，按传送带、分拣器、电力、矿机、熔炉、制造台、仓储等分类。
-- 可手搓建筑候选：配方 ID、是否解锁、材料是否足够、缺口材料。
-- 基础铁块生产线所需物品缺口摘要。
-- 玩家附近资源点和资源类型摘要。
-- 玩家附近已有基础设施和缺电建筑数量。
-- 当前电网数量、蓄电量、发电/耗电寄存器和供电满足率。
 
 ## 第一阶段接口
 
@@ -255,6 +228,8 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 ### GET /state
 
 返回最新状态快照。
+
+缺失的 section 直接返回 `null`，正常 section 不额外返回 `available: true`。
 
 第一步不做复杂查询参数。后续可以增加 `sections`、`nearPlayerRadius`、`limit` 等参数。
 
@@ -319,7 +294,7 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 
 - 进入游戏后日志显示快照定时生成。
 - `GET /health` 返回最近快照 tick。
-- `GET /state` 至少返回 metadata、game、player、inventory、replicator、research、currentPlanet、factory、preferences、statistics、spaceSector、galaxy、dysonSpheres、history、galacticTransport、warningSystem、trashSystem、goalSystem、milestoneSystem、gameAchievement、production、power、alerts、buildContext。
+- `GET /state` 至少返回 metadata、game、player、inventory、forge、research、currentPlanet、factory、preferences、statistics、spaceSector、galaxy、dysonSpheres、history、galacticTransport、warningSystem、trashSystem、goalSystem、milestoneSystem、gameAchievement、production、power。
 - 不进入游戏时接口返回明确状态，而不是异常。
 - 停留在主菜单或菜单演示时不会保留旧的 `latest.json` 或早期 `gameData.json`。
 
@@ -332,7 +307,7 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 - 当前行星矿脉和资源点。
 - 当前行星建筑摘要。
 - 产量、消耗和供电摘要。
-- 告警和 buildContext。
+- 派生告警和建造上下文不放在 `/state`；后续根据建造命令需求设计独立 context/query。
 
 验证：
 

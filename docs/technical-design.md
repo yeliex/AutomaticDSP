@@ -389,17 +389,18 @@ query Queue {
 - `player`：伊卡洛斯位置、宇宙位置、朝向、移动状态、是否在行星上、建造范围和交互范围。
 - `mecha`：生命、核心能量、反应堆能量、沙土、建造无人机状态。
 - `inventory`：背包槽位、空槽、物品列表和按物品汇总。
-- `replicator`：背包制造队列字段先保留结构，后续补齐映射。
+- `forge`：`MechaForge` 背包制造状态，包括队列长度、总剩余时间、实际制造速度、`extraItems`、瓶颈物品和每个 `ForgeTask` 的配方、进度、材料、产物、父任务索引。
 - `research`：当前研究、研究队列、hash 速率和停滞状态。
 - `currentPlanet`：当前行星基础信息、风能/太阳能倍率、资源矿脉摘要。
-- `factory`：当前行星工厂摘要、玩家附近建筑、建筑类型汇总、传送带/分拣器数量和附近缺电建筑。
-- `preferences`、`statistics`、`spaceSector`、`galaxy`、`dysonSpheres`、`history`、`galacticTransport`、`warningSystem`、`trashSystem`、`goalSystem`、`milestoneSystem`、`gameAchievement`：来自 `GameMain` 或 `GameMain.data` 的根系统手写摘要；只保留稳定、可读、可决策的 KV，不暴露 `type/fields/properties` 反射结构。
+- `factory`：当前行星工厂实体数量、有限实体样本、建筑类型汇总、传送带/分拣器游标数量和缺电建筑总数。
+- `preferences`、`statistics`、`spaceSector`、`galaxy`、`dysonSpheres`、`history`、`galacticTransport`、`warningSystem`、`trashSystem`、`goalSystem`、`milestoneSystem`、`gameAchievement`：来自 `GameMain` 或 `GameMain.data` 的根系统手写摘要；`galaxy.stars[].planets` 包含行星摘要，`planets[].veins` 包含行星矿物分组；`spaceSector`、`dysonSpheres`、`galacticTransport` 包含有限明细；只保留稳定、可读、可决策的 KV，不暴露 `type/fields/properties` 反射结构。
 - `production`：当前行星生产、消耗和电力统计寄存器的非零项。
 - `power`：电网数量、蓄电量、发电/耗电/充放电统计。
-- `alerts`：由快照推导出的缺电、研究停滞等告警。
-- `buildContext`：当前建造作用域、背包关键建筑、手搓候选和材料缺口、基础铁块线需求、附近资源、附近基础设施、电力摘要。
 
 `debug` 和 `data` 不作为 `/state` 字段返回。`/state` 本身是 GameMain 可序列化状态快照：保留 `metadata`，用 `game` 表示运行状态，并把关键根系统拆成独立顶层字段。
+缺失的 section 直接返回 `null`，正常 section 不额外返回 `available: true`。
+到玩家、当前行星或任意实体的距离不写入 `/state`，因为它随天体和玩家位置变化；查询层根据快照中的 `uPosition`、`runtimePosition`、实体位置按需计算。
+派生告警、建造上下文和任务决策辅助不放进 `/state`，后续根据具体建造命令需求设计独立 context/query。
 
 任务状态不放在 `/state` 快照里，第一阶段通过 `GET /tasks` 查询内存中的待执行和执行中命令，通过 `GET /history` 查询 SQLite 中的历史命令。
 
