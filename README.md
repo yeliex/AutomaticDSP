@@ -7,6 +7,8 @@ AutomaticDSP 是一个用于《戴森球计划》的自动化控制 Mod，目标
 - 需求文档：`docs/requirements.md`
 - 技术方案：`docs/technical-design.md`
 - 开发计划：`docs/development-plan.md`
+- API 文档：`docs/api.md`
+- 查询语法：`docs/query-syntax.md`
 - BepInEx 工程骨架：`src/AutomaticDSP`
 
 M1 只读状态观测接口默认监听：
