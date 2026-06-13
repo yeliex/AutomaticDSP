@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Reflection;
 using System.Threading;
@@ -220,6 +221,8 @@ namespace AutomaticDSP.State
             {
                 case "metadata":
                     return CaptureQueryMetadata(gameTick);
+                case "_schema":
+                    return CaptureQuerySchema();
                 case "game":
                     return CaptureQueryableGameState();
                 case "gameMain":
@@ -267,6 +270,45 @@ namespace AutomaticDSP.State
                 ["localPlanetId"] = GameMain.localPlanet?.id,
                 ["localStarId"] = GameMain.localStar?.id,
                 ["schemaVersion"] = 1
+            };
+        }
+
+        private static JsonObject CaptureQuerySchema()
+        {
+            return new JsonObject
+            {
+                ["roots"] = new List<object>
+                {
+                    QueryRoot("metadata", "object", "Query metadata for the current state read."),
+                    QueryRoot("game", "object", "Stable game/session summary."),
+                    QueryRoot("gameMain", "object", "GameMain instance for selected field reads."),
+                    QueryRoot("data", "object", "GameMain.data for selected field reads."),
+                    QueryRoot("player", "object", "Current main player."),
+                    QueryRoot("mainPlayer", "object", "Alias of player."),
+                    QueryRoot("mecha", "object", "Current player mecha."),
+                    QueryRoot("inventory", "object", "Current player inventory/package."),
+                    QueryRoot("package", "object", "Alias of inventory."),
+                    QueryRoot("forge", "object", "Current player replicator/forge."),
+                    QueryRoot("replicator", "object", "Alias of forge."),
+                    QueryRoot("localPlanet", "object", "Current local planet, if any."),
+                    QueryRoot("currentPlanet", "object", "Alias of localPlanet."),
+                    QueryRoot("localStar", "object", "Current local star, if any."),
+                    QueryRoot("factory", "object", "Current local planet factory, if loaded."),
+                    QueryRoot("localFactory", "object", "Alias of factory."),
+                    QueryRoot("factories", "list", "GameData factories array."),
+                    QueryRoot("production", "object", "Production statistics."),
+                    QueryRoot("power", "object", "Current local planet power system.")
+                }
+            };
+        }
+
+        private static JsonObject QueryRoot(string name, string kind, string description)
+        {
+            return new JsonObject
+            {
+                ["name"] = name,
+                ["kind"] = kind,
+                ["description"] = description
             };
         }
 
@@ -343,6 +385,11 @@ namespace AutomaticDSP.State
 
             foreach (var item in enumerable)
             {
+                if (!MatchesFilters(item, field.Filters))
+                {
+                    continue;
+                }
+
                 if (index++ < offset)
                 {
                     continue;
@@ -368,12 +415,17 @@ namespace AutomaticDSP.State
                 return null;
             }
 
+            if (name == "_fields")
+            {
+                return DiscoverFields(source);
+            }
+
             if (source is JsonObject jsonObject)
             {
                 return jsonObject.TryGetValue(name, out var value) ? value : null;
             }
 
-            return MemberValue(source, name);
+            return GetQueryableMemberValue(source, name);
         }
 
         private static object SerializeQueryLeaf(object value, StateQueryField field)
@@ -405,6 +457,11 @@ namespace AutomaticDSP.State
                 return quaternion;
             }
 
+            if (IsRuntimeValue(value))
+            {
+                return null;
+            }
+
             if (value is JsonObject jsonObject)
             {
                 return SerializeOneLevelJsonObject(jsonObject);
@@ -418,6 +475,11 @@ namespace AutomaticDSP.State
                 var index = 0;
                 foreach (var item in enumerable)
                 {
+                    if (!MatchesFilters(item, field.Filters))
+                    {
+                        continue;
+                    }
+
                     if (index++ < offset)
                     {
                         continue;
@@ -476,6 +538,11 @@ namespace AutomaticDSP.State
 
                 try
                 {
+                    if (!IsQueryableMember(field.Name, field.FieldType))
+                    {
+                        continue;
+                    }
+
                     result[field.Name] = SerializeOneLevelMemberValue(field.GetValue(source));
                 }
                 catch
@@ -498,6 +565,11 @@ namespace AutomaticDSP.State
 
                 try
                 {
+                    if (!IsQueryableMember(property.Name, property.PropertyType))
+                    {
+                        continue;
+                    }
+
                     result[property.Name] = SerializeOneLevelMemberValue(property.GetValue(source, null));
                 }
                 catch
@@ -538,6 +610,11 @@ namespace AutomaticDSP.State
                 return quaternion;
             }
 
+            if (IsRuntimeValue(value))
+            {
+                return null;
+            }
+
             if (value is IEnumerable && !(value is string))
             {
                 return new JsonObject
@@ -547,6 +624,476 @@ namespace AutomaticDSP.State
             }
 
             return new JsonObject();
+        }
+
+        private static List<object> DiscoverFields(object source)
+        {
+            var result = new List<object>();
+            if (source == null)
+            {
+                return result;
+            }
+
+            if (source is JsonObject jsonObject)
+            {
+                foreach (var pair in jsonObject)
+                {
+                    if (result.Count >= OneLevelMemberLimit)
+                    {
+                        break;
+                    }
+
+                    if (pair.Value != null && (!IsQueryableMember(pair.Key, pair.Value.GetType()) || IsRuntimeValue(pair.Value)))
+                    {
+                        continue;
+                    }
+
+                    result.Add(FieldDescriptor(pair.Key, pair.Value));
+                }
+
+                return result;
+            }
+
+            var type = source.GetType();
+            var flags = BindingFlags.Instance | BindingFlags.Public;
+            foreach (var field in type.GetFields(flags))
+            {
+                if (result.Count >= OneLevelMemberLimit)
+                {
+                    return result;
+                }
+
+                if (!IsQueryableMember(field.Name, field.FieldType))
+                {
+                    continue;
+                }
+
+                result.Add(FieldDescriptor(field.Name, field.FieldType));
+            }
+
+            foreach (var property in type.GetProperties(flags))
+            {
+                if (result.Count >= OneLevelMemberLimit)
+                {
+                    break;
+                }
+
+                if (property.GetIndexParameters().Length != 0)
+                {
+                    continue;
+                }
+
+                if (!IsQueryableMember(property.Name, property.PropertyType))
+                {
+                    continue;
+                }
+
+                result.Add(FieldDescriptor(property.Name, property.PropertyType));
+            }
+
+            return result;
+        }
+
+        private static JsonObject FieldDescriptor(string name, object value)
+        {
+            if (value == null)
+            {
+                return new JsonObject
+                {
+                    ["name"] = name,
+                    ["kind"] = "null",
+                    ["type"] = null
+                };
+            }
+
+            return FieldDescriptor(name, value.GetType());
+        }
+
+        private static JsonObject FieldDescriptor(string name, Type type)
+        {
+            return new JsonObject
+            {
+                ["name"] = name,
+                ["kind"] = QueryKind(type),
+                ["type"] = type == null ? null : FriendlyTypeName(type)
+            };
+        }
+
+        private static string QueryKind(Type type)
+        {
+            if (type == null)
+            {
+                return "null";
+            }
+
+            if (IsScalarType(type) || type.IsEnum || IsVectorType(type))
+            {
+                return "scalar";
+            }
+
+            if (typeof(IEnumerable).IsAssignableFrom(type) && type != typeof(string))
+            {
+                return "list";
+            }
+
+            return "object";
+        }
+
+        private static string FriendlyTypeName(Type type)
+        {
+            if (type == null)
+            {
+                return null;
+            }
+
+            if (!type.IsArray)
+            {
+                return type.Name;
+            }
+
+            var elementType = type.GetElementType();
+            return (elementType == null ? "Object" : elementType.Name) + "[]";
+        }
+
+        private static bool MatchesFilters(object item, List<StateQueryFilter> filters)
+        {
+            if (filters.Count == 0)
+            {
+                return true;
+            }
+
+            foreach (var filter in filters)
+            {
+                if (!MatchesFilter(item, filter))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static bool MatchesFilter(object item, StateQueryFilter filter)
+        {
+            if (!TryResolveFilterValue(item, filter.Path, out var actual))
+            {
+                return false;
+            }
+
+            switch (filter.Operation)
+            {
+                case StateQueryFilterOperator.NotEquals:
+                    return filter.Values.Count > 0 && !ValuesEqual(actual, filter.Values[0]);
+                case StateQueryFilterOperator.GreaterThan:
+                    return filter.Values.Count > 0 && CompareNumbers(actual, filter.Values[0], out var greaterThan) && greaterThan > 0;
+                case StateQueryFilterOperator.GreaterThanOrEqual:
+                    return filter.Values.Count > 0 && CompareNumbers(actual, filter.Values[0], out var greaterThanOrEqual) && greaterThanOrEqual >= 0;
+                case StateQueryFilterOperator.LessThan:
+                    return filter.Values.Count > 0 && CompareNumbers(actual, filter.Values[0], out var lessThan) && lessThan < 0;
+                case StateQueryFilterOperator.LessThanOrEqual:
+                    return filter.Values.Count > 0 && CompareNumbers(actual, filter.Values[0], out var lessThanOrEqual) && lessThanOrEqual <= 0;
+                case StateQueryFilterOperator.Contains:
+                    return filter.Values.Count > 0 && TextContains(actual, filter.Values[0]);
+                case StateQueryFilterOperator.StartsWith:
+                    return filter.Values.Count > 0 && TextStartsWith(actual, filter.Values[0]);
+                case StateQueryFilterOperator.EndsWith:
+                    return filter.Values.Count > 0 && TextEndsWith(actual, filter.Values[0]);
+                case StateQueryFilterOperator.In:
+                    foreach (var expected in filter.Values)
+                    {
+                        if (ValuesEqual(actual, expected))
+                        {
+                            return true;
+                        }
+                    }
+
+                    return false;
+                default:
+                    return filter.Values.Count > 0 && ValuesEqual(actual, filter.Values[0]);
+            }
+        }
+
+        private static bool TryResolveFilterValue(object source, string[] path, out object value)
+        {
+            value = source;
+            foreach (var segment in path)
+            {
+                if (value == null)
+                {
+                    return false;
+                }
+
+                if (value is JsonObject jsonObject)
+                {
+                    if (!jsonObject.TryGetValue(segment, out value))
+                    {
+                        return false;
+                    }
+
+                    if (IsRuntimeValue(value))
+                    {
+                        return false;
+                    }
+
+                    continue;
+                }
+
+                if (!TryGetQueryableMemberValue(value, segment, out value))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static bool ValuesEqual(object actual, object expected)
+        {
+            if (actual == null || expected == null)
+            {
+                return actual == null && expected == null;
+            }
+
+            if (TryToDouble(actual, out var actualNumber) && TryToDouble(expected, out var expectedNumber))
+            {
+                return actualNumber.CompareTo(expectedNumber) == 0;
+            }
+
+            if (actual is bool actualBool && expected is bool expectedBool)
+            {
+                return actualBool == expectedBool;
+            }
+
+            return string.Equals(FilterText(actual), FilterText(expected), StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool CompareNumbers(object actual, object expected, out int result)
+        {
+            result = 0;
+            if (!TryToDouble(actual, out var actualNumber) || !TryToDouble(expected, out var expectedNumber))
+            {
+                return false;
+            }
+
+            result = actualNumber.CompareTo(expectedNumber);
+            return true;
+        }
+
+        private static bool TextContains(object actual, object expected)
+        {
+            var actualText = FilterText(actual);
+            var expectedText = FilterText(expected);
+            return actualText != null &&
+                expectedText != null &&
+                actualText.IndexOf(expectedText, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool TextStartsWith(object actual, object expected)
+        {
+            var actualText = FilterText(actual);
+            var expectedText = FilterText(expected);
+            return actualText != null &&
+                expectedText != null &&
+                actualText.StartsWith(expectedText, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool TextEndsWith(object actual, object expected)
+        {
+            var actualText = FilterText(actual);
+            var expectedText = FilterText(expected);
+            return actualText != null &&
+                expectedText != null &&
+                actualText.EndsWith(expectedText, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string FilterText(object value)
+        {
+            if (value == null)
+            {
+                return null;
+            }
+
+            if (value is Enum)
+            {
+                return value.ToString();
+            }
+
+            return value is IFormattable formattable
+                ? formattable.ToString(null, CultureInfo.InvariantCulture)
+                : value.ToString();
+        }
+
+        private static bool TryToDouble(object value, out double number)
+        {
+            switch (value)
+            {
+                case byte byteValue:
+                    number = byteValue;
+                    return true;
+                case sbyte sbyteValue:
+                    number = sbyteValue;
+                    return true;
+                case short shortValue:
+                    number = shortValue;
+                    return true;
+                case ushort ushortValue:
+                    number = ushortValue;
+                    return true;
+                case int intValue:
+                    number = intValue;
+                    return true;
+                case uint uintValue:
+                    number = uintValue;
+                    return true;
+                case long longValue:
+                    number = longValue;
+                    return true;
+                case ulong ulongValue:
+                    number = ulongValue;
+                    return true;
+                case float floatValue:
+                    number = floatValue;
+                    return true;
+                case double doubleValue:
+                    number = doubleValue;
+                    return true;
+                case decimal decimalValue:
+                    number = (double)decimalValue;
+                    return true;
+                case string stringValue:
+                    return double.TryParse(stringValue, NumberStyles.Float, CultureInfo.InvariantCulture, out number);
+                default:
+                    number = 0;
+                    return false;
+            }
+        }
+
+        private static object GetQueryableMemberValue(object target, string name)
+        {
+            return TryGetQueryableMemberValue(target, name, out var value) ? value : null;
+        }
+
+        private static bool TryGetQueryableMemberValue(object target, string name, out object value)
+        {
+            if (target == null)
+            {
+                value = null;
+                return false;
+            }
+
+            var type = target.GetType();
+            const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            var field = type.GetField(name, flags);
+            if (field != null)
+            {
+                if (!IsQueryableMember(field.Name, field.FieldType))
+                {
+                    value = null;
+                    return false;
+                }
+
+                try
+                {
+                    value = field.GetValue(target);
+                    if (IsRuntimeValue(value))
+                    {
+                        value = null;
+                        return false;
+                    }
+
+                    return true;
+                }
+                catch
+                {
+                    value = null;
+                    return false;
+                }
+            }
+
+            var property = type.GetProperty(name, flags);
+            if (property != null && property.GetIndexParameters().Length == 0)
+            {
+                if (!IsQueryableMember(property.Name, property.PropertyType))
+                {
+                    value = null;
+                    return false;
+                }
+
+                try
+                {
+                    value = property.GetValue(target, null);
+                    if (IsRuntimeValue(value))
+                    {
+                        value = null;
+                        return false;
+                    }
+
+                    return true;
+                }
+                catch
+                {
+                    value = null;
+                    return false;
+                }
+            }
+
+            value = null;
+            return false;
+        }
+
+        private static bool IsQueryableMember(string name, Type type)
+        {
+            return !IsRuntimeMemberName(name) && !IsRuntimeType(type);
+        }
+
+        private static bool IsRuntimeValue(object value)
+        {
+            return value != null && IsRuntimeType(value.GetType());
+        }
+
+        private static bool IsRuntimeType(Type type)
+        {
+            if (type == null)
+            {
+                return false;
+            }
+
+            if (typeof(Delegate).IsAssignableFrom(type))
+            {
+                return true;
+            }
+
+            return typeof(UnityEngine.Object).IsAssignableFrom(type);
+        }
+
+        private static bool IsRuntimeMemberName(string name)
+        {
+            if (string.IsNullOrEmpty(name))
+            {
+                return false;
+            }
+
+            var lower = name.ToLowerInvariant();
+            return lower == "gameobject" ||
+                lower == "transform" ||
+                lower == "material" ||
+                lower == "terrainmaterial" ||
+                lower == "mesh" ||
+                lower == "renderer" ||
+                lower == "shader" ||
+                lower == "texture" ||
+                lower == "camera" ||
+                lower == "audio" ||
+                lower == "animator" ||
+                lower == "collider" ||
+                lower == "rigidbody" ||
+                lower == "recttransform" ||
+                lower == "canvas" ||
+                lower == "sprite" ||
+                lower.EndsWith("gameobject") ||
+                lower.EndsWith("material") ||
+                lower.EndsWith("renderer") ||
+                lower.EndsWith("texture");
         }
 
         private static bool IsQueryScalar(object value)
@@ -566,6 +1113,40 @@ namespace AutomaticDSP.State
                 value is decimal ||
                 value is DateTime ||
                 value is DateTimeOffset;
+        }
+
+        private static bool IsScalarType(Type type)
+        {
+            return type == typeof(string) ||
+                type == typeof(bool) ||
+                type == typeof(byte) ||
+                type == typeof(sbyte) ||
+                type == typeof(short) ||
+                type == typeof(ushort) ||
+                type == typeof(int) ||
+                type == typeof(uint) ||
+                type == typeof(long) ||
+                type == typeof(ulong) ||
+                type == typeof(float) ||
+                type == typeof(double) ||
+                type == typeof(decimal) ||
+                type == typeof(DateTime) ||
+                type == typeof(DateTimeOffset);
+        }
+
+        private static bool IsVectorType(Type type)
+        {
+            if (type == null)
+            {
+                return false;
+            }
+
+            var name = type.Name;
+            return name == "Vector2" ||
+                name == "Vector3" ||
+                name == "Vector4" ||
+                name == "VectorLF3" ||
+                name == "Quaternion";
         }
 
         private void ClearPersistedSnapshots()

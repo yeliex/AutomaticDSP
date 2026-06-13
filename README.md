@@ -24,14 +24,14 @@ http://127.0.0.1:39270/
 
 可用端点：
 
-- `GET /state/game`
-- `POST /state`
+- `GET /game`
+- `POST /game/state`
 - `GET /tasks`
 - `GET /history`
 
-`GET /state/game` 是轻量游戏运行状态接口。未进入可查询对局时只返回 `ready` 和 `status`；进入对局后会额外返回 `gameName`、tick/time、沙盒开关、创建时间、战斗模式、资源倍率、油倍率和恒星数量。
+`GET /game` 是轻量游戏运行状态接口。未进入可查询对局时只返回 `ready` 和 `status`；进入对局后会额外返回 `gameName`、tick/time、沙盒开关、创建时间、战斗模式、资源倍率、油倍率和恒星数量。
 
-`POST /state` 接收 GraphQL 字段选择 DSL。HTTP 线程只把查询排队；游戏主线程每 60 game ticks drain 待查询队列，并在主线程为每个请求生成最终 JSON。字段不存在或不可读时返回 `null`，复杂对象未选择子字段时返回 `{}`。
+`POST /game/state` 接收 GraphQL 字段选择 DSL。HTTP 线程只把查询排队；游戏主线程每 60 game ticks drain 待查询队列，并在主线程为每个请求生成最终 JSON。字段不存在或不可读时返回 `null`，复杂对象未选择子字段时返回 `{}`。
 
 运行时数据输出到：
 

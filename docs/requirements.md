@@ -1,6 +1,6 @@
 # AutomaticDSP 需求说明
 
-> 当前 M1 实现以 `docs/development-plan.md` 为准：`GET /state/game` 返回轻量游戏状态，`POST /state` 使用 GraphQL 字段选择 DSL 按需查询游戏状态，`GET /tasks` 与 `GET /history` 独立返回任务和历史。
+> 当前 M1 实现以 `docs/development-plan.md` 为准：`GET /game` 返回轻量游戏状态，`POST /game/state` 使用 GraphQL 字段选择 DSL 按需查询游戏状态，`GET /tasks` 与 `GET /history` 独立返回任务和历史。
 > M1 状态查询只保存在内存中，不默认输出快照文件；历史命令写入 `BepInEx/cache/AutomaticDSP/data/history.sqlite`。
 
 ## 背景
@@ -35,9 +35,9 @@ AutomaticDSP 是一个用于《戴森球计划》的自动化控制 Mod。目标
 
 ### 状态查询
 
-`POST /state` 使用 GraphQL 查询语法作为字段选择 DSL。它不是完整 GraphQL 服务，不提供 schema、自省、resolver 框架或 mutation。
+`POST /game/state` 使用 GraphQL 查询语法作为字段选择 DSL。它不是完整 GraphQL 服务，不提供 schema、自省、resolver 框架或 mutation。
 
-一次 `/state` 请求会被放入主线程查询队列。游戏主线程在查询 tick 内直接按该请求的字段、别名和分页参数生成最终 JSON，HTTP 线程只等待并返回结果，不再做二次字段投影。
+一次 `/game/state` 请求会被放入主线程查询队列。游戏主线程在查询 tick 内直接按该请求的字段、别名和分页参数生成最终 JSON，HTTP 线程只等待并返回结果，不再做二次字段投影。
 
 状态查询至少覆盖：
 
@@ -70,7 +70,7 @@ AutomaticDSP 是一个用于《戴森球计划》的自动化控制 Mod。目标
 - `powerNetwork`：供电网络和供电状态。
 - `recipe`：配方及解锁状态。
 - `item`：物品原型。
-任务不放在 `/state` 查询里。待执行或执行中的任务通过 `GET /tasks` 查询，历史任务通过 `GET /history` 查询。
+任务不放在 `/game/state` 查询里。待执行或执行中的任务通过 `GET /tasks` 查询，历史任务通过 `GET /history` 查询。
 
 `task_queue` 不是对外实体。唯一队列通过 `GET /tasks` 获得，返回结果中的每一项都是一个任务。
 
@@ -93,7 +93,8 @@ AutomaticDSP 是一个用于《戴森球计划》的自动化控制 Mod。目标
 
 - 多 root 字段组合查询。
 - 嵌套字段投影。
-- `limit` 和 `offset` 分页。
+- `limit`、`offset` 和 `where` 列表过滤。
+- `_schema` 查询根和对象上的 `_fields` 字段发现。
 - 不存在或不可读字段返回 `null`。
 - 复杂对象未选择子字段时返回 `{}`。
 
@@ -103,7 +104,7 @@ AutomaticDSP 是一个用于《戴森球计划》的自动化控制 Mod。目标
 - 查询时修改游戏状态。
 - 无限制全量导出。
 - GraphQL schema、自省、变量校验、业务字段校验。
-- `where`、`orderBy`、空间过滤等高级参数。
+- `orderBy`、空间过滤等高级参数。
 
 示例：
 
@@ -145,6 +146,21 @@ query ObserveFactory {
   }
 }
 ```
+
+过滤示例：
+
+```graphql
+query FilterFactory {
+  factory {
+    entityPool(where: { id_gt: 0, protoId_in: [2301, 2302] }, limit: 20) {
+      id
+      protoId
+    }
+  }
+}
+```
+
+`where` 条件按 AND 组合，过滤在分页前执行。不存在字段进入条件时视为匹配失败，不提供 `field_exists`。
 
 分页示例：
 
@@ -307,9 +323,9 @@ mutation CancelTask {
 
 第一阶段完成时，应能验证：
 
-1. `GET /state/game` 可以判断游戏是否处于可查询对局。
-2. `POST /state` 可以在同一游戏查询 tick 内按需读取玩家、背包、当前行星、工厂、生产和供电状态。
-3. `POST /state` 查询由主线程读取游戏对象并直接生成最终 JSON，HTTP 线程不做二次字段投影。
+1. `GET /game` 可以判断游戏是否处于可查询对局。
+2. `POST /game/state` 可以在同一游戏查询 tick 内按需读取玩家、背包、当前行星、工厂、生产和供电状态。
+3. `POST /game/state` 查询由主线程读取游戏对象并直接生成最终 JSON，HTTP 线程不做二次字段投影。
 4. 大列表支持 `limit` 和 `offset`，不存在字段返回 `null`，复杂对象未展开时返回 `{}`。
 5. `GET /tasks` 可以查询内存中的待执行或执行中任务；第一阶段可以为空列表。
 6. `GET /history` 可以查询 SQLite 中的历史命令；第一阶段可以为空列表。

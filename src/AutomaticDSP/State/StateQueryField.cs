@@ -9,6 +9,7 @@ namespace AutomaticDSP.State
             Name = name;
             ResponseName = responseName;
             Children = new List<StateQueryField>();
+            Filters = new List<StateQueryFilter>();
         }
 
         public string Name { get; }
@@ -18,6 +19,8 @@ namespace AutomaticDSP.State
         public int? Limit { get; set; }
 
         public int? Offset { get; set; }
+
+        public List<StateQueryFilter> Filters { get; }
 
         public List<StateQueryField> Children { get; }
 
@@ -34,6 +37,11 @@ namespace AutomaticDSP.State
                 clone.Children.Add(child.Clone());
             }
 
+            foreach (var filter in Filters)
+            {
+                clone.Filters.Add(filter.Clone());
+            }
+
             return clone;
         }
 
@@ -47,6 +55,11 @@ namespace AutomaticDSP.State
             if (!Offset.HasValue && other.Offset.HasValue)
             {
                 Offset = other.Offset;
+            }
+
+            foreach (var filter in other.Filters)
+            {
+                Filters.Add(filter.Clone());
             }
 
             foreach (var otherChild in other.Children)

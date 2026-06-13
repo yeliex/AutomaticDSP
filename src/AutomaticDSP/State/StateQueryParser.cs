@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using GraphQLParser;
@@ -19,7 +20,7 @@ namespace AutomaticDSP.State
 
             if (operation.Operation != OperationType.Query)
             {
-                throw new StateQueryParseException("Only GraphQL query operations are supported by /state.");
+                throw new StateQueryParseException("Only GraphQL query operations are supported by /game/state.");
             }
 
             var plan = new StateQueryPlan();
@@ -113,6 +114,12 @@ namespace AutomaticDSP.State
                 Limit = IntArgument(field.Arguments, "limit"),
                 Offset = IntArgument(field.Arguments, "offset")
             };
+
+            foreach (var filter in ParseWhereFilters(field.Arguments))
+            {
+                queryField.Filters.Add(filter);
+            }
+
             AddSelections(queryField.Children, field.SelectionSet, fragments, fragmentStack);
 
             var existing = FindField(fields, responseName, name);
@@ -160,6 +167,162 @@ namespace AutomaticDSP.State
             }
 
             return null;
+        }
+
+        private static List<StateQueryFilter> ParseWhereFilters(GraphQLArguments arguments)
+        {
+            var filters = new List<StateQueryFilter>();
+            if (arguments?.Items == null)
+            {
+                return filters;
+            }
+
+            foreach (var argument in arguments.Items)
+            {
+                if (argument.Name.StringValue != "where")
+                {
+                    continue;
+                }
+
+                if (!(argument.Value is GraphQLObjectValue whereValue))
+                {
+                    throw new StateQueryParseException("where argument must be an object.");
+                }
+
+                if (whereValue.Fields == null)
+                {
+                    return filters;
+                }
+
+                foreach (var filterField in whereValue.Fields)
+                {
+                    filters.Add(ParseFilter(filterField));
+                }
+            }
+
+            return filters;
+        }
+
+        private static StateQueryFilter ParseFilter(GraphQLObjectField field)
+        {
+            var rawName = field.Name.StringValue;
+            var operation = StateQueryFilterOperator.Equals;
+            var pathName = rawName;
+
+            if (TryRemoveSuffix(rawName, "_startsWith", out pathName))
+            {
+                operation = StateQueryFilterOperator.StartsWith;
+            }
+            else if (TryRemoveSuffix(rawName, "_endsWith", out pathName))
+            {
+                operation = StateQueryFilterOperator.EndsWith;
+            }
+            else if (TryRemoveSuffix(rawName, "_contains", out pathName))
+            {
+                operation = StateQueryFilterOperator.Contains;
+            }
+            else if (TryRemoveSuffix(rawName, "_gte", out pathName))
+            {
+                operation = StateQueryFilterOperator.GreaterThanOrEqual;
+            }
+            else if (TryRemoveSuffix(rawName, "_lte", out pathName))
+            {
+                operation = StateQueryFilterOperator.LessThanOrEqual;
+            }
+            else if (TryRemoveSuffix(rawName, "_gt", out pathName))
+            {
+                operation = StateQueryFilterOperator.GreaterThan;
+            }
+            else if (TryRemoveSuffix(rawName, "_lt", out pathName))
+            {
+                operation = StateQueryFilterOperator.LessThan;
+            }
+            else if (TryRemoveSuffix(rawName, "_ne", out pathName))
+            {
+                operation = StateQueryFilterOperator.NotEquals;
+            }
+            else if (TryRemoveSuffix(rawName, "_in", out pathName))
+            {
+                operation = StateQueryFilterOperator.In;
+            }
+
+            var path = pathName.Split(new[] { "__" }, StringSplitOptions.RemoveEmptyEntries);
+            if (path.Length == 0)
+            {
+                throw new StateQueryParseException("where filter field path cannot be empty.");
+            }
+
+            return new StateQueryFilter(path, operation, ParseFilterValues(field.Value));
+        }
+
+        private static bool TryRemoveSuffix(string value, string suffix, out string withoutSuffix)
+        {
+            if (value.EndsWith(suffix, StringComparison.Ordinal))
+            {
+                withoutSuffix = value.Substring(0, value.Length - suffix.Length);
+                return true;
+            }
+
+            withoutSuffix = value;
+            return false;
+        }
+
+        private static List<object> ParseFilterValues(GraphQLValue value)
+        {
+            var values = new List<object>();
+            if (value is GraphQLListValue listValue)
+            {
+                if (listValue.Values == null)
+                {
+                    return values;
+                }
+
+                foreach (var item in listValue.Values)
+                {
+                    values.Add(ParseFilterScalar(item));
+                }
+
+                return values;
+            }
+
+            values.Add(ParseFilterScalar(value));
+            return values;
+        }
+
+        private static object ParseFilterScalar(GraphQLValue value)
+        {
+            if (value is GraphQLIntValue intValue)
+            {
+                if (long.TryParse((string)intValue.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var longValue))
+                {
+                    return longValue;
+                }
+            }
+            else if (value is GraphQLFloatValue floatValue)
+            {
+                if (double.TryParse((string)floatValue.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var doubleValue))
+                {
+                    return doubleValue;
+                }
+            }
+            else if (value is GraphQLStringValue stringValue)
+            {
+                return (string)stringValue.Value;
+            }
+            else if (value is GraphQLBooleanValue booleanValue)
+            {
+                return booleanValue.BoolValue;
+            }
+            else if (value is GraphQLEnumValue enumValue)
+            {
+                return enumValue.Name.StringValue;
+            }
+            else if (value is GraphQLNullValue)
+            {
+                return null;
+            }
+
+            throw new StateQueryParseException("where filter values must be scalar literals.");
         }
     }
 }

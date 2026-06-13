@@ -106,21 +106,21 @@ namespace AutomaticDSP.Api
                     return;
                 }
 
-                if (path == "/state/game")
+                if (path == "/game")
                 {
                     if (!IsGet(context))
                     {
-                        WriteJson(context, 405, Error("method_not_allowed", "Only GET is supported for /state/game."));
+                        WriteJson(context, 405, Error("method_not_allowed", "Only GET is supported for /game."));
                         return;
                     }
 
                     WriteJson(context, 200, snapshotService.GetGameStatus());
                 }
-                else if (path == "/state")
+                else if (path == "/game/state")
                 {
                     if (!string.Equals(context.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
                     {
-                        WriteJson(context, 405, Error("method_not_allowed", "Only POST is supported for /state."));
+                        WriteJson(context, 405, Error("method_not_allowed", "Only POST is supported for /game/state."));
                     }
                     else
                     {

@@ -1,6 +1,6 @@
 # AutomaticDSP 技术方案
 
-> 当前 M1 实现以 `docs/development-plan.md` 为准：HTTP 使用 .NET 内置 `HttpListener`，JSON 使用 `Newtonsoft.Json`，先实现 `/state/game`、`POST /state`、`/tasks`、`/history`。`POST /state` 只使用 GraphQL 作为字段选择 DSL，不提供 GraphQL schema/resolver 框架。
+> 当前 M1 实现以 `docs/development-plan.md` 为准：HTTP 使用 .NET 内置 `HttpListener`，JSON 使用 `Newtonsoft.Json`，先实现 `/game`、`POST /game/state`、`/tasks`、`/history`。`POST /game/state` 只使用 GraphQL 作为字段选择 DSL，不提供 GraphQL schema/resolver 框架。
 > M1 状态查询只保存在内存中，不默认写入快照文件；主菜单、菜单演示或加载界面不保存游戏内数据快照。
 > M1 HTTP 配置项包含 `HTTP.Host` 和 `HTTP.Port`，默认 `127.0.0.1:39270`，可把 host 改成 `0.0.0.0` 供外部调用。
 
@@ -11,7 +11,7 @@ AutomaticDSP 分为游戏内 Mod 和外部 GraphQL 接口两部分。
 ```mermaid
 flowchart LR
   Agent["外部 AI Agent"] --> HTTP["本地 HTTP 接口"]
-  HTTP --> StateQuery["/state 查询队列"]
+  HTTP --> StateQuery["/game/state 查询队列"]
   HTTP --> TaskApi["/tasks 与 /history"]
   StateQuery --> MainThread["游戏主线程查询服务"]
   MainThread --> Game["DSP 游戏对象"]
@@ -24,7 +24,7 @@ flowchart LR
 
 - 在 Unity 主线程读取游戏状态。
 - 每 tick 维护轻量游戏运行状态。
-- 通过 `POST /state` 暴露按需状态查询。
+- 通过 `POST /game/state` 暴露按需状态查询。
 - 通过任务接口提交、查询和取消任务。
 - 维护唯一顺序任务队列。
 - 在游戏主线程逐帧执行命令。
@@ -56,7 +56,7 @@ Unity 和 DSP 游戏对象只能在游戏主线程安全访问。HTTP 请求线�
 推荐模型：
 
 1. `Plugin.Update()` 在主线程维护轻量游戏运行状态并驱动命令执行。
-2. HTTP 服务线程只负责接收 `POST /state`、解析 GraphQL 字段选择、入队和返回结果。
+2. HTTP 服务线程只负责接收 `POST /game/state`、解析 GraphQL 字段选择、入队和返回结果。
 3. 游戏主线程每 60 game ticks drain 待查询队列，在同一个游戏 tick 内为每个请求生成最终 JSON。
 4. HTTP 线程只等待对应请求的最终 JSON 并返回，不做二次字段投影。
 5. mutation 不直接修改游戏对象，只把任务提交或取消请求写入线程安全缓冲区。
@@ -79,7 +79,7 @@ Unity 和 DSP 游戏对象只能在游戏主线程安全访问。HTTP 请求线�
 
 ## GraphQL 字段选择 DSL
 
-`POST /state` 只使用 GraphQL 查询语法表达字段选择，不提供 GraphQL schema、resolver 框架、自省、mutation 或业务字段校验。
+`POST /game/state` 只使用 GraphQL 查询语法表达字段选择，不提供 GraphQL schema、resolver 框架、自省、mutation 或业务字段校验。
 
 HTTP 线程只做三件事：
 
@@ -115,7 +115,8 @@ HTTP 线程只做三件事：
 - 支持多 root 字段组合查询。
 - 支持嵌套字段投影、fragment 和 inline fragment。
 - 支持字段别名。
-- 列表支持 `limit` 和 `offset`，默认最多 256 项，单次上限 2048。
+- 列表支持 `limit`、`offset` 和 `where`，默认最多 256 项，单次上限 2048。
+- 支持 `_schema` 查询根和对象上的 `_fields` 字段，用于发现可查询入口和字段。
 - 不存在或不可读字段返回 `null`。
 - 复杂对象未选择子字段时返回 `{}`。
 - Unity 对象、委托、方法等不可安全序列化对象不直接返回。
@@ -125,7 +126,7 @@ HTTP 线程只做三件事：
 - GraphQL schema 和自省。
 - GraphQL mutation。
 - GraphQL 变量求值。
-- `where`、`orderBy`、空间过滤等高级参数。
+- `orderBy`、空间过滤等高级参数。
 - 查询时修改游戏状态。
 
 ## 查询示例
@@ -201,21 +202,45 @@ query PagedFactory {
 状态查询：
 
 ```http
-POST /state
+POST /game/state
 ```
 
 ## 过滤、排序与限制
 
-过滤和排序后续通过 GraphQL argument 表达。当前第一阶段不维护字段白名单：查询层按字段路径尝试读取 `GameMain`、`GameMain.data` 或常用语义根对象，字段不存在、不可读或不可安全序列化时返回 `null`。
+过滤和排序通过 GraphQL argument 表达。当前第一阶段不维护字段白名单：查询层按字段路径尝试读取 `GameMain`、`GameMain.data` 或常用语义根对象，字段不存在、不可读或不可安全序列化时返回 `null`。
 
-M1 已实现的参数只有：
+M1 已实现的列表参数：
 
 - `limit`：列表返回数量，默认 256，上限 2048。
 - `offset`：列表起始偏移，默认 0。
+- `where`：列表过滤条件，过滤在 `offset` 和 `limit` 前执行。
+
+`where` 使用对象字面量表达，所有条件按 AND 组合。不支持 `field_exists`，不存在字段参与条件时按匹配失败处理。
+
+```graphql
+query FilterFactory {
+  factory {
+    entityPool(
+      where: {
+        id_gt: 0
+        protoId_in: [2301, 2302]
+        pos__x_gte: 0
+      }
+      limit: 20
+    ) {
+      id
+      protoId
+      pos { x y z }
+    }
+  }
+}
+```
+
+已支持的后缀包括：无后缀等于、`_ne`、`_gt`、`_gte`、`_lt`、`_lte`、`_contains`、`_startsWith`、`_endsWith`、`_in`。嵌套字段路径用 `__` 分隔，例如 `pos__x_gt`。
 
 分页、字段别名和字段选择在主线程按请求执行。HTTP 线程不把不同请求合并成一个全量对象，也不在返回前重新分页或投影。
 
-后续如果需要建筑状态查询、矿脉空间查询、物流站过滤，可以继续在查询层增加显式参数，例如 `where`、`orderBy`、`withinRadius`。这些参数应按实体逐个设计，不提前做通用表达式解释器。
+后续如果需要排序、矿脉空间查询、物流站专用过滤，可以继续在查询层增加显式参数，例如 `orderBy`、`withinRadius`。这些参数应按实体逐个设计，不提前做复杂通用表达式解释器。
 
 ## 任务队列
 
@@ -297,7 +322,7 @@ M1 已实现的参数只有：
 
 ## 游戏状态查询
 
-`POST /state` 是按需状态查询，不维护字段白名单，也不生成完整状态快照。查询根优先支持常用语义入口，例如 `metadata`、`game`、`gameMain`、`data`、`player`、`mainPlayer`、`mecha`、`inventory`、`package`、`forge`、`replicator`、`localPlanet`、`localStar`、`factory`、`factories`、`production`、`power`；其他顶层字段会继续尝试从 `GameMain` 静态成员、`GameMain.instance` 和 `GameMain.data` 读取。
+`POST /game/state` 是按需状态查询，不维护字段白名单，也不生成完整状态快照。查询根优先支持常用语义入口，例如 `metadata`、`game`、`gameMain`、`data`、`player`、`mainPlayer`、`mecha`、`inventory`、`package`、`forge`、`replicator`、`localPlanet`、`localStar`、`factory`、`factories`、`production`、`power`；其他顶层字段会继续尝试从 `GameMain` 静态成员、`GameMain.instance` 和 `GameMain.data` 读取。
 
 查询规则：
 
@@ -306,18 +331,18 @@ M1 已实现的参数只有：
 - 不存在或不可读字段返回 `null`。
 - 复杂对象未选择子字段时返回 `{}`，避免把“对象存在但未展开”误判为不存在。
 - Unity 对象、委托、方法等不可安全序列化对象不直接返回。
-- 复杂列表默认最多返回 256 项，支持 `limit` 和 `offset`，单次 `limit` 上限为 2048。
+- 复杂列表默认最多返回 256 项，支持 `limit`、`offset` 和 `where`，单次 `limit` 上限为 2048。
 
-到玩家、当前行星或任意实体的距离不默认写入 `/state`，因为它随天体和玩家位置变化；后续查询层可以根据 `uPosition`、`runtimePosition`、实体位置按需计算。
-派生告警、建造上下文和任务决策辅助不放进 `/state`，后续根据具体建造命令需求设计独立 context/query。
+到玩家、当前行星或任意实体的距离不默认写入 `/game/state`，因为它随天体和玩家位置变化；后续查询层可以根据 `uPosition`、`runtimePosition`、实体位置按需计算。
+派生告警、建造上下文和任务决策辅助不放进 `/game/state`，后续根据具体建造命令需求设计独立 context/query。
 
-任务状态不放在 `/state` 查询里，第一阶段通过 `GET /tasks` 查询内存中的待执行和执行中命令，通过 `GET /history` 查询 SQLite 中的历史命令。
+任务状态不放在 `/game/state` 查询里，第一阶段通过 `GET /tasks` 查询内存中的待执行和执行中命令，通过 `GET /history` 查询 SQLite 中的历史命令。
 
 HTTP 接口层只负责解析查询、入队、返回结果、任务状态和历史命令；读取 GameMain、生成状态 JSON、后续执行游戏内命令的控制逻辑都留在游戏主线程服务中，不在 HTTP handler 中直接触碰 DSP 对象。
 
-`GET /state/game` 返回主线程每 tick 维护的轻量运行状态。未进入可查询对局时只返回 `ready` 与 `status`；可查询对局中额外返回 `gameName`、tick/time、沙盒开关、创建时间、战斗模式、战斗难度、资源倍率、油倍率和恒星数量。`status` 使用 `loading`、`running`、`paused`、`ended`、`prologue`、`cutscene`、`error`、`menu`、`unknown`，其中 `prologue` 来自 `GameData.guideRunning && !guideComplete`，`cutscene` 来自 `DSPGame.IsCombatCutscene`。
+`GET /game` 返回主线程每 tick 维护的轻量运行状态。未进入可查询对局时只返回 `ready` 与 `status`；可查询对局中额外返回 `gameName`、tick/time、沙盒开关、创建时间、战斗模式、战斗难度、资源倍率、油倍率和恒星数量。`status` 使用 `loading`、`running`、`paused`、`ended`、`prologue`、`cutscene`、`error`、`menu`、`unknown`，其中 `prologue` 来自 `GameData.guideRunning && !guideComplete`，`cutscene` 来自 `DSPGame.IsCombatCutscene`。
 
-主菜单、菜单演示或加载界面不接受 `/state` 查询；如果之前存在 `snapshots/latest.json`、`snapshots/state.json`、`snapshots/galaxy.json`、`snapshots/transport.stations.json`、`snapshots/spheres.json`、`snapshots/localPlanet.factories.json`、早期 `dumps/gameData.json` 或早期 `diagnostics/gameMain.json`，进入非对局状态时应清理。
+主菜单、菜单演示或加载界面不接受 `/game/state` 查询；如果之前存在 `snapshots/latest.json`、`snapshots/state.json`、`snapshots/galaxy.json`、`snapshots/transport.stations.json`、`snapshots/spheres.json`、`snapshots/localPlanet.factories.json`、早期 `dumps/gameData.json` 或早期 `diagnostics/gameMain.json`，进入非对局状态时应清理。
 
 对于建筑、矿脉等数量较多的实体，查询层必须支持 `limit`，并在后续实体化查询中优先支持空间过滤。
 
@@ -349,8 +374,8 @@ HTTP 接口层只负责解析查询、入队、返回结果、任务状态和历
 
 交付：
 
-- `GET /state/game`。
-- `POST /state`。
+- `GET /game`。
+- `POST /game/state`。
 - GraphQL 字段选择 DSL。
 - 基础根字段：`metadata`、`game`、`player`、`inventory`、`forge`、`localPlanet`、`factory`、`production`、`power`。
 - `GET /tasks` 空实现。
@@ -358,7 +383,7 @@ HTTP 接口层只负责解析查询、入队、返回结果、任务状态和历
 
 验证：
 
-- 能通过 `GET /state/game` 判断可查询状态。
+- 能通过 `GET /game` 判断可查询状态。
 - 能在同一游戏查询 tick 下查询玩家位置和背包。
 - 能分页读取当前行星工厂实体。
 - 能通过 `GET /tasks` 查询空队列。
@@ -408,7 +433,7 @@ HTTP 接口层只负责解析查询、入队、返回结果、任务状态和历
 缓解策略：
 
 - 把游戏内部访问集中到 Adapter 层。
-- `/state` 只解析 GraphQL 字段选择 DSL，不暴露 mutation、自省或任意脚本执行。
+- `/game/state` 只解析 GraphQL 字段选择 DSL，不暴露 mutation、自省或任意脚本执行。
 - 列表查询默认施加服务端上限，并支持 `limit` / `offset`。
 - 第一阶段只支持当前行星。
 - 优先使用游戏原生建造流程，避免直接改底层数组。
