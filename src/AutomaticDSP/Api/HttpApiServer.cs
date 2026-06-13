@@ -100,6 +100,12 @@ namespace AutomaticDSP.Api
             try
             {
                 var path = context.Request.Url.AbsolutePath;
+                if (IsOptions(context))
+                {
+                    WriteNoContent(context, 204);
+                    return;
+                }
+
                 if (path == "/state/game")
                 {
                     if (!IsGet(context))
@@ -250,6 +256,11 @@ namespace AutomaticDSP.Api
             return string.Equals(context.Request.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase);
         }
 
+        private static bool IsOptions(HttpListenerContext context)
+        {
+            return string.Equals(context.Request.HttpMethod, "OPTIONS", StringComparison.OrdinalIgnoreCase);
+        }
+
         private static string DisplayHost(string value)
         {
             return IsAnyHost(value) ? "0.0.0.0" : value;
@@ -265,6 +276,29 @@ namespace AutomaticDSP.Api
             return IsAnyHost(value) ? "*" : value;
         }
 
+        private static void ApplyCorsHeaders(HttpListenerResponse response)
+        {
+            response.Headers["Access-Control-Allow-Origin"] = "*";
+            response.Headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS";
+            response.Headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization";
+            response.Headers["Access-Control-Max-Age"] = "86400";
+        }
+
+        private static void WriteNoContent(HttpListenerContext context, int statusCode)
+        {
+            var response = context.Response;
+            try
+            {
+                response.StatusCode = statusCode;
+                response.ContentLength64 = 0;
+                ApplyCorsHeaders(response);
+            }
+            finally
+            {
+                response.OutputStream.Close();
+            }
+        }
+
         private void WriteJson(HttpListenerContext context, int statusCode, object payload)
         {
             var json = JsonConvert.SerializeObject(payload, Formatting.None, jsonSettings);
@@ -275,7 +309,7 @@ namespace AutomaticDSP.Api
                 response.StatusCode = statusCode;
                 response.ContentType = "application/json; charset=utf-8";
                 response.ContentLength64 = body.Length;
-                response.Headers["Access-Control-Allow-Origin"] = "*";
+                ApplyCorsHeaders(response);
                 response.OutputStream.Write(body, 0, body.Length);
             }
             finally
