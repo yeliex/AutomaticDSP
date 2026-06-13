@@ -33,9 +33,9 @@ http://127.0.0.1:39270/
 
 - `BepInEx/cache/AutomaticDSP/data/history.sqlite`
 - `BepInEx/cache/AutomaticDSP/snapshots/latest.json`
-- `BepInEx/cache/AutomaticDSP/diagnostics/gameMain.json`
+- `BepInEx/cache/AutomaticDSP/dumps/gameData.json`
 
-`latest.json` 和 `diagnostics/gameMain.json` 只会在真实对局载入后写入。停留在主菜单、菜单演示或加载界面时，Mod 会清理旧快照，避免把菜单里的默认游戏对象误当成可观测状态。
+`latest.json` 和 `gameData.json` 只会在真实对局载入后写入，并使用格式化 JSON 便于调试。停留在主菜单、菜单演示或加载界面时，Mod 会清理旧快照和旧 dump，避免把菜单里的默认游戏对象误当成可观测状态。
 
 默认游戏目录：
 
