@@ -212,11 +212,10 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 
 `debug` 用于早期字段映射，不作为 Agent 长期依赖的稳定查询契约。
 
-- `GameMain` 静态字段和属性摘要。
-- 当前 `GameMain` 实例字段和属性摘要。
-- `GameMain.data` 字段和属性摘要。
-- `DSPGame` 静态字段和属性摘要。
+- `sessionGate` 当前判定结果。
+- `game` 稳定对局摘要。
 - 同步写入 `BepInEx/cache/AutomaticDSP/diagnostics/gameMain.json` 便于调试。
+- 不在主循环中反射扫描 `GameMain`、`GameData` 或 Unity 对象，避免加载期副作用。
 - 仅在真实对局载入后保存；主菜单、菜单演示或加载界面不保存。
 
 ## 第一阶段接口

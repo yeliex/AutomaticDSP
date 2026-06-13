@@ -3,7 +3,6 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using System.Reflection;
 using System.Text;
 using AutomaticDSP.Serialization;
 using BepInEx.Logging;
@@ -31,6 +30,7 @@ namespace AutomaticDSP.State
         private bool inactiveSnapshotFileChecked;
         private string inactiveReasonLogged;
         private bool latestGameLoaded;
+        private JsonObject latestSessionGate;
         private StateSnapshot latestSnapshot;
 
         public StateSnapshotService(int snapshotIntervalTicks, string cacheRootPath, ManualLogSource log)
@@ -39,6 +39,7 @@ namespace AutomaticDSP.State
             diagnosticsDirectory = Path.Combine(cacheRootPath, "diagnostics");
             snapshotDirectory = Path.Combine(cacheRootPath, "snapshots");
             this.log = log;
+            latestSessionGate = SessionGate("not_observed");
             ClearPersistedSnapshots();
         }
 
@@ -58,15 +59,17 @@ namespace AutomaticDSP.State
                 ["latestSnapshotId"] = snapshot?.Id,
                 ["latestGameTick"] = snapshot?.GameTick,
                 ["snapshotIntervalTicks"] = snapshotIntervalTicks,
-                ["sessionGate"] = CaptureSessionGate()
+                ["sessionGate"] = latestSessionGate
             };
         }
 
         public void Update()
         {
-            if (!IsGameSessionLoaded())
+            var unavailableReason = GetSessionUnavailableReason();
+            latestSessionGate = CaptureSessionGate(unavailableReason);
+            if (unavailableReason != null)
             {
-                MarkSessionUnavailable();
+                MarkSessionUnavailable(unavailableReason);
                 return;
             }
 
@@ -100,7 +103,7 @@ namespace AutomaticDSP.State
                 data["power"] = CapturePower();
                 data["alerts"] = CaptureAlerts(data);
                 data["buildContext"] = CaptureBuildContext(data);
-                var debug = CaptureDebugState();
+                var debug = CaptureGameMainDiagnostics();
                 data["debug"] = debug;
 
                 stopwatch.Stop();
@@ -126,7 +129,7 @@ namespace AutomaticDSP.State
             }
         }
 
-        private void MarkSessionUnavailable()
+        private void MarkSessionUnavailable(string reason)
         {
             latestGameLoaded = false;
             latestSnapshot = null;
@@ -138,7 +141,6 @@ namespace AutomaticDSP.State
                 inactiveSnapshotFileChecked = true;
             }
 
-            var reason = GetSessionUnavailableReason();
             if (!inactiveLogged || inactiveReasonLogged != reason)
             {
                 log.LogInfo($"AutomaticDSP state snapshot is waiting for a loaded game session: {reason}.");
@@ -336,232 +338,55 @@ namespace AutomaticDSP.State
             };
         }
 
-        private JsonObject CaptureDebugState()
+        private JsonObject CaptureGameMainDiagnostics()
         {
-            var data = SafeGet(() => GameMain.data);
-            var instance = SafeGet(() => GameMain.instance);
-
             return new JsonObject
             {
                 ["capturedAt"] = DateTimeOffset.UtcNow,
-                ["gameSessionLoaded"] = IsGameSessionLoaded(),
-                ["gameMainStatic"] = CaptureMembers(null, typeof(GameMain), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static, 120),
-                ["gameMainInstance"] = instance == null ? null : CaptureMembers(instance, typeof(GameMain), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance, 160),
-                ["gameData"] = data == null ? null : CaptureMembers(data, typeof(GameData), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance, 180),
-                ["dspGameStatic"] = CaptureMembers(null, typeof(DSPGame), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static, 120)
+                ["sessionGate"] = latestSessionGate,
+                ["game"] = CaptureGameState()
             };
         }
 
-        private static JsonObject CaptureSessionGate()
-        {
-            var reason = GetSessionUnavailableReason();
-            return new JsonObject
-            {
-                ["loaded"] = reason == null,
-                ["reason"] = reason,
-                ["gameMainData"] = SafeGet(() => GameMain.data) != null,
-                ["gameMainNotNull"] = SafeGet(() => GameMain.notNull),
-                ["gameMainRunning"] = SafeGet(() => GameMain.isRunning),
-                ["gameMainLoading"] = SafeGet(() => GameMain.isLoading),
-                ["gameMainEnded"] = SafeGet(() => GameMain.isEnded),
-                ["gameMainLoadErrored"] = SafeGet(() => GameMain.loadErrored),
-                ["gameMainInOtherScene"] = SafeGet(() => GameMain.inOtherScene),
-                ["dspGameIsMenuDemo"] = SafeGet(() => DSPGame.IsMenuDemo),
-                ["dspGameMenuDemoLoaded"] = SafeGet(() => DSPGame.MenuDemoLoaded),
-                ["gameMainIsMenuDemo"] = IsGameMainMenuDemo(),
-                ["mainPlayer"] = SafeGet(() => GameMain.mainPlayer) != null,
-                ["history"] = SafeGet(() => GameMain.history) != null,
-                ["statistics"] = SafeGet(() => GameMain.statistics) != null,
-                ["galaxy"] = SafeGet(() => GameMain.galaxy) != null,
-                ["gameTick"] = SafeGet(() => GameMain.gameTick),
-                ["gameTime"] = SafeGet(() => GameMain.gameTime),
-                ["gameName"] = SafeGet(() => GameMain.gameName)
-            };
-        }
-
-        private static JsonObject CaptureMembers(object target, Type type, BindingFlags flags, int limit)
-        {
-            var result = new JsonObject
-            {
-                ["type"] = type.FullName
-            };
-            var members = new JsonObject();
-            var count = 0;
-
-            foreach (var field in type.GetFields(flags))
-            {
-                if (count >= limit)
-                {
-                    break;
-                }
-
-                members[field.Name] = ReadMember(() => field.GetValue(target));
-                count++;
-            }
-
-            foreach (var property in type.GetProperties(flags))
-            {
-                if (count >= limit)
-                {
-                    break;
-                }
-
-                if (property.GetIndexParameters().Length > 0)
-                {
-                    continue;
-                }
-
-                members[property.Name] = ReadMember(() => property.GetValue(target, null));
-                count++;
-            }
-
-            result["memberCount"] = count;
-            result["members"] = members;
-            return result;
-        }
-
-        private static object ReadMember(Func<object> read)
+        private static JsonObject CaptureSessionGate(string reason)
         {
             try
             {
-                return ToDebugValue(read());
+                return new JsonObject
+                {
+                    ["loaded"] = reason == null,
+                    ["reason"] = reason,
+                    ["gameMainData"] = GameMain.data != null,
+                    ["gameMainNotNull"] = GameMain.notNull,
+                    ["gameMainRunning"] = GameMain.isRunning,
+                    ["gameMainLoading"] = GameMain.isLoading,
+                    ["gameMainEnded"] = GameMain.isEnded,
+                    ["gameMainLoadErrored"] = GameMain.loadErrored,
+                    ["gameMainInOtherScene"] = GameMain.inOtherScene,
+                    ["dspGameIsMenuDemo"] = DSPGame.IsMenuDemo,
+                    ["gameMainIsMenuDemo"] = IsGameMainMenuDemo(),
+                    ["mainPlayer"] = GameMain.mainPlayer != null,
+                    ["history"] = GameMain.history != null,
+                    ["statistics"] = GameMain.statistics != null,
+                    ["galaxy"] = GameMain.galaxy != null,
+                    ["gameTick"] = GameMain.gameTick,
+                    ["gameTime"] = GameMain.gameTime,
+                    ["gameName"] = GameMain.gameName
+                };
             }
             catch (Exception ex)
             {
-                return new JsonObject
-                {
-                    ["error"] = ex.GetType().Name,
-                    ["message"] = ex.Message
-                };
+                return SessionGate("exception_" + ex.GetType().Name);
             }
         }
 
-        private static object ToDebugValue(object value)
+        private static JsonObject SessionGate(string reason)
         {
-            if (value == null)
+            return new JsonObject
             {
-                return null;
-            }
-
-            var type = value.GetType();
-            if (type.IsPrimitive || value is string || value is decimal || value is DateTime || value is DateTimeOffset)
-            {
-                return value;
-            }
-
-            if (type.IsEnum)
-            {
-                return value.ToString();
-            }
-
-            if (value is Vector3 vector3)
-            {
-                return Vector(vector3);
-            }
-
-            if (value is VectorLF3 vectorLf3)
-            {
-                return Vector(vectorLf3);
-            }
-
-            if (value is Array array)
-            {
-                return ArraySummary(array);
-            }
-
-            if (value is ICollection collection)
-            {
-                return new JsonObject
-                {
-                    ["type"] = type.FullName,
-                    ["count"] = collection.Count
-                };
-            }
-
-            return ObjectSummary(value);
-        }
-
-        private static JsonObject ArraySummary(Array array)
-        {
-            var result = new JsonObject
-            {
-                ["type"] = array.GetType().FullName,
-                ["elementType"] = array.GetType().GetElementType()?.FullName,
-                ["length"] = array.Length,
-                ["rank"] = array.Rank
+                ["loaded"] = false,
+                ["reason"] = reason
             };
-
-            var sample = new List<object>();
-            if (array.Rank == 1)
-            {
-                for (var i = 0; i < array.Length && sample.Count < 16; i++)
-                {
-                    var value = array.GetValue(i);
-                    if (value == null)
-                    {
-                        sample.Add(null);
-                    }
-                    else
-                    {
-                        var valueType = value.GetType();
-                        sample.Add(valueType.IsPrimitive || value is string || valueType.IsEnum ? ToDebugValue(value) : ObjectSummary(value));
-                    }
-                }
-            }
-
-            result["sample"] = sample;
-            return result;
-        }
-
-        private static JsonObject ObjectSummary(object value)
-        {
-            var type = value.GetType();
-            var result = new JsonObject
-            {
-                ["type"] = type.FullName
-            };
-
-            AddSummaryMember(result, value, "id");
-            AddSummaryMember(result, value, "index");
-            AddSummaryMember(result, value, "name");
-            AddSummaryMember(result, value, "displayName");
-            AddSummaryMember(result, value, "planetId");
-            AddSummaryMember(result, value, "starId");
-            AddSummaryMember(result, value, "factoryIndex");
-            AddSummaryMember(result, value, "count");
-            AddSummaryMember(result, value, "length");
-            AddSummaryMember(result, value, "cursor");
-            AddSummaryMember(result, value, "entityCursor");
-            AddSummaryMember(result, value, "factoryCount");
-            AddSummaryMember(result, value, "starCount");
-            return result;
-        }
-
-        private static void AddSummaryMember(JsonObject result, object target, string name)
-        {
-            var value = ReflectionReader.Get(target, name);
-            if (value == null)
-            {
-                return;
-            }
-
-            var type = value.GetType();
-            if (type.IsPrimitive || value is string || type.IsEnum)
-            {
-                result[name] = ToDebugValue(value);
-            }
-        }
-
-        private static T SafeGet<T>(Func<T> read)
-        {
-            try
-            {
-                return read();
-            }
-            catch
-            {
-                return default;
-            }
         }
 
         private JsonObject CapturePlayer()
@@ -1072,8 +897,14 @@ namespace AutomaticDSP.State
 
         private static bool IsGameMainMenuDemo()
         {
-            var instance = SafeGet(() => GameMain.instance);
-            return ReflectionReader.GetBool(instance, false, "isMenuDemo");
+            try
+            {
+                return ReflectionReader.GetBool(GameMain.instance, false, "isMenuDemo");
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private static JsonObject ItemSummary(Dictionary<int, int> items)

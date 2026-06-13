@@ -397,7 +397,7 @@ query Queue {
 - `power`：电网数量、蓄电量、发电/耗电/充放电统计。
 - `alerts`：由快照推导出的缺电、研究停滞等告警。
 - `buildContext`：建造决策上下文字段先保留结构，后续补齐可建造建筑和缺口。
-- `debug`：`GameMain`、当前 `GameMain` 实例、`GameMain.data`、`DSPGame` 的字段/属性摘要，仅用于早期字段映射调试。
+- `debug`：`sessionGate` 和稳定 `game` 摘要，仅用于早期字段映射调试；主循环中不反射扫描 `GameMain`、`GameData` 或 Unity 对象。
 
 任务状态不放在 `/state` 快照里，第一阶段通过 `GET /tasks` 查询内存中的待执行和执行中命令，通过 `GET /history` 查询 SQLite 中的历史命令。
 
