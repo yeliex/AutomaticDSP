@@ -1,7 +1,7 @@
 # AutomaticDSP 技术方案
 
 > 当前 M1 实现以 `docs/development-plan.md` 为准：HTTP 使用 .NET 内置 `HttpListener`，JSON 使用 `Newtonsoft.Json`，先实现 `/health`、`/state`、`/tasks`、`/history`。本文中 GraphQL schema 保留为后续查询增强候选，不是 M1 交付范围。
-> M1 运行时数据、最新快照和 GameData dump 统一写入 `BepInEx/cache/AutomaticDSP`；主菜单、菜单演示或加载界面不保存游戏内数据快照。
+> M1 运行时数据和最新快照统一写入 `BepInEx/cache/AutomaticDSP`；主菜单、菜单演示或加载界面不保存游戏内数据快照。
 > M1 HTTP 配置项包含 `HTTP.Host` 和 `HTTP.Port`，默认 `127.0.0.1:39270`，可把 host 改成 `0.0.0.0` 供外部调用。
 
 ## 总体架构
@@ -385,8 +385,7 @@ query Queue {
 第一阶段已确定保存的稳定状态字段：
 
 - `metadata`：快照 ID、游戏 tick、采样时间、采样耗时、当前恒星/行星 ID、schema 版本。
-- `game`：存档名、创建时间、运行 tick/time、生命周期状态、菜单演示状态、当前位置、星系摘要、工厂数量、戴森球数量、根系统可用性。
-- `data`：`GameMain.data` 的可序列化快照；顶层成员尽量保留，运行时对象转为摘要，不让 HTTP 层持有 Unity/DSP 对象。
+- `game`：存档名、创建时间、运行 tick/time、生命周期状态、菜单演示状态、当前位置、`game.desc`、星系摘要、工厂数量、戴森球数量、根系统可用性。
 - `player`：伊卡洛斯位置、宇宙位置、朝向、移动状态、是否在行星上、建造范围和交互范围。
 - `mecha`：生命、核心能量、反应堆能量、沙土、建造无人机状态。
 - `inventory`：背包槽位、空槽、物品列表和按物品汇总。
@@ -394,18 +393,19 @@ query Queue {
 - `research`：当前研究、研究队列、hash 速率和停滞状态。
 - `currentPlanet`：当前行星基础信息、风能/太阳能倍率、资源矿脉摘要。
 - `factory`：当前行星工厂摘要、玩家附近建筑、建筑类型汇总、传送带/分拣器数量和附近缺电建筑。
+- `preferences`、`statistics`、`spaceSector`、`galaxy`、`dysonSpheres`、`history`、`galacticTransport`、`warningSystem`、`trashSystem`、`goalSystem`、`milestoneSystem`、`gameAchievement`：来自 `GameMain` 或 `GameMain.data` 的根系统可序列化快照；顶层成员尽量完整，数组带长度、样本和非空样本，复杂对象只保留摘要。
 - `production`：当前行星生产、消耗和电力统计寄存器的非零项。
 - `power`：电网数量、蓄电量、发电/耗电/充放电统计。
 - `alerts`：由快照推导出的缺电、研究停滞等告警。
 - `buildContext`：当前建造作用域、背包关键建筑、手搓候选和材料缺口、基础铁块线需求、附近资源、附近基础设施、电力摘要。
 
-`debug` 不作为 `/state` 字段返回。`/state` 本身是 GameMain 可序列化状态快照：保留 `metadata`，用 `game` 表示运行状态，用 `data` 表示 `GameMain.data`。完整 GameData dump 另写到 `BepInEx/cache/AutomaticDSP/dumps/gameData.json`，使用格式化 JSON 便于对比。
+`debug` 和 `data` 不作为 `/state` 字段返回。`/state` 本身是 GameMain 可序列化状态快照：保留 `metadata`，用 `game` 表示运行状态，并把关键根系统拆成独立顶层字段。
 
 任务状态不放在 `/state` 快照里，第一阶段通过 `GET /tasks` 查询内存中的待执行和执行中命令，通过 `GET /history` 查询 SQLite 中的历史命令。
 
 HTTP 接口层只负责读取内存快照、任务状态和历史命令；采样 GameMain、后续执行游戏内命令的控制逻辑都留在游戏主线程服务中，不在 HTTP handler 中直接触碰 DSP 对象。
 
-主菜单、菜单演示或加载界面不生成快照；如果之前存在 `snapshots/latest.json`、`dumps/gameData.json` 或早期 `diagnostics/gameMain.json`，进入非对局状态时应清理。
+主菜单、菜单演示或加载界面不生成快照；如果之前存在 `snapshots/latest.json`、早期 `dumps/gameData.json` 或早期 `diagnostics/gameMain.json`，进入非对局状态时应清理。
 
 对于建筑、矿脉等数量较多的实体，resolver 必须支持 `limit`，并优先支持空间过滤。
 

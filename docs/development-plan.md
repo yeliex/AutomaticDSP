@@ -17,7 +17,7 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 - 暂不实现 GraphQL，先用 REST/JSON 跑通可观测性。
 - HTTP 服务使用 .NET 内置 `HttpListener`，JSON 序列化使用 `Newtonsoft.Json`。
 - HTTP 默认监听 `127.0.0.1:39270`，其中 `HTTP.Host` 和 `HTTP.Port` 都是配置项；需要外部访问时可以把 `HTTP.Host` 改成 `0.0.0.0`。
-- 未加载存档、主菜单、菜单演示或加载界面不生成状态快照，`GET /state` 返回明确的不可用状态，并清理旧的 `snapshots/latest.json`、`dumps/gameData.json` 与早期 `diagnostics/gameMain.json`。
+- 未加载存档、主菜单、菜单演示或加载界面不生成状态快照，`GET /state` 返回明确的不可用状态，并清理旧的 `snapshots/latest.json`、早期 `dumps/gameData.json` 与早期 `diagnostics/gameMain.json`。
 
 采样间隔参考：
 
@@ -82,15 +82,27 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 - 存档数据摘要：行星工厂数量、戴森球数组数量、引导任务状态、地表是否就绪。
 - 根系统可用性：玩家、科技历史、统计、偏好、太空层、星际物流、告警、垃圾系统。
 
-### data
+### GameMain 根系统
 
-`data` 是 `GameMain.data` 的可序列化快照，用于调试和补齐后续查询字段。它不直接返回 Unity 或 DSP 运行时对象：
+以下字段作为 `/state` 顶层对象返回，来自 `GameMain` 或 `GameMain.data` 的根系统。它们不直接返回 Unity 或 DSP 运行时对象：
 
 - 顶层字段和属性尽量完整保留名称。
 - 基本类型、字符串、枚举、时间和值类型直接序列化。
 - `Vector3` 与 `VectorLF3` 转成 `{ x, y, z }`。
 - 数组记录类型、元素类型、长度、维度和有限样本。
 - 复杂对象只保存类型和常见标识字段摘要，避免循环引用和运行时对象被 HTTP 层持有。
+- `preferences`
+- `statistics`
+- `spaceSector`
+- `galaxy`
+- `dysonSpheres`
+- `history`
+- `galacticTransport`
+- `warningSystem`
+- `trashSystem`
+- `goalSystem`
+- `milestoneSystem`
+- `gameAchievement`
 
 ### player
 
@@ -219,10 +231,6 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 - 玩家附近已有基础设施和缺电建筑数量。
 - 当前电网数量、蓄电量、发电/耗电寄存器和供电满足率。
 
-### GameData dump
-
-完整的 `GameData` 可序列化快照同步写入 `BepInEx/cache/AutomaticDSP/dumps/gameData.json`，使用格式化 JSON 便于和 `/state.data` 对比。它只在真实对局载入后保存；主菜单、菜单演示或加载界面不保存。
-
 ## 第一阶段接口
 
 ### GET /health
@@ -307,15 +315,14 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 - `GET /history` 空实现。
 - SQLite 初始化和历史表结构，数据库位于 `BepInEx/cache/AutomaticDSP/data/history.sqlite`。
 - 最新状态快照写入 `BepInEx/cache/AutomaticDSP/snapshots/latest.json`。
-- `GameMain.data` 可序列化 dump 写入 `BepInEx/cache/AutomaticDSP/dumps/gameData.json`。
 
 验证：
 
 - 进入游戏后日志显示快照定时生成。
 - `GET /health` 返回最近快照 tick。
-- `GET /state` 至少返回 metadata、game、data、player、inventory、replicator、research、currentPlanet、factory、production、power、alerts、buildContext。
+- `GET /state` 至少返回 metadata、game、player、inventory、replicator、research、currentPlanet、factory、preferences、statistics、spaceSector、galaxy、dysonSpheres、history、galacticTransport、warningSystem、trashSystem、goalSystem、milestoneSystem、gameAchievement、production、power、alerts、buildContext。
 - 不进入游戏时接口返回明确状态，而不是异常。
-- 停留在主菜单或菜单演示时不会保留旧的 `latest.json` 或 `gameData.json`。
+- 停留在主菜单或菜单演示时不会保留旧的 `latest.json` 或早期 `gameData.json`。
 
 ### M2：状态完整性补齐
 
@@ -421,7 +428,6 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 - 默认端口 `39270`。
 - SQLite 只存历史命令，不存完整游戏快照。
 - 最新 JSON 快照写入 `BepInEx/cache/AutomaticDSP/snapshots/latest.json`，用于调试和外部观测。
-- GameData dump 写入 `BepInEx/cache/AutomaticDSP/dumps/gameData.json`，只在真实对局载入后保存。
 
 ## 待确认问题
 
