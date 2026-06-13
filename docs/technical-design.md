@@ -393,7 +393,7 @@ query Queue {
 - `research`：当前研究、研究队列、hash 速率和停滞状态。
 - `currentPlanet`：当前行星基础信息、风能/太阳能倍率、资源矿脉摘要。
 - `factory`：当前行星工厂摘要、玩家附近建筑、建筑类型汇总、传送带/分拣器数量和附近缺电建筑。
-- `preferences`、`statistics`、`spaceSector`、`galaxy`、`dysonSpheres`、`history`、`galacticTransport`、`warningSystem`、`trashSystem`、`goalSystem`、`milestoneSystem`、`gameAchievement`：来自 `GameMain` 或 `GameMain.data` 的根系统可序列化快照；顶层成员尽量完整，数组带长度、样本和非空样本，复杂对象只保留摘要。
+- `preferences`、`statistics`、`spaceSector`、`galaxy`、`dysonSpheres`、`history`、`galacticTransport`、`warningSystem`、`trashSystem`、`goalSystem`、`milestoneSystem`、`gameAchievement`：来自 `GameMain` 或 `GameMain.data` 的根系统手写摘要；只保留稳定、可读、可决策的 KV，不暴露 `type/fields/properties` 反射结构。
 - `production`：当前行星生产、消耗和电力统计寄存器的非零项。
 - `power`：电网数量、蓄电量、发电/耗电/充放电统计。
 - `alerts`：由快照推导出的缺电、研究停滞等告警。

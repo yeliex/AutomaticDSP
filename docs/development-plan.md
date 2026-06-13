@@ -84,13 +84,12 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 
 ### GameMain 根系统
 
-以下字段作为 `/state` 顶层对象返回，来自 `GameMain` 或 `GameMain.data` 的根系统。它们不直接返回 Unity 或 DSP 运行时对象：
+以下字段作为 `/state` 顶层对象返回，来自 `GameMain` 或 `GameMain.data` 的根系统。它们使用手写摘要 DTO，不直接返回 Unity/DSP 运行时对象，也不暴露 `type/fields/properties` 这类反射 dump 结构：
 
-- 顶层字段和属性尽量完整保留名称。
-- 基本类型、字符串、枚举、时间和值类型直接序列化。
-- `Vector3` 与 `VectorLF3` 转成 `{ x, y, z }`。
-- 数组记录类型、元素类型、长度、维度和有限样本。
-- 复杂对象只保存类型和常见标识字段摘要，避免循环引用和运行时对象被 HTTP 层持有。
+- 基本类型、字符串、枚举、时间和值类型按稳定字段名输出。
+- `Vector3`、`VectorLF3` 和 `Quaternion` 转成可读 KV。
+- 大数组只返回 count、summary 或有限 sample。
+- 复杂对象只保留 AI Agent 可直接决策的关键字段；需要明细时后续通过 query DSL 查询。
 - `preferences`
 - `statistics`
 - `spaceSector`
