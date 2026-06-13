@@ -3,6 +3,7 @@ using BepInEx.Configuration;
 using BepInEx.Logging;
 using System.IO;
 using AutomaticDSP.Api;
+using AutomaticDSP.GameControl;
 using AutomaticDSP.State;
 using AutomaticDSP.Storage;
 using AutomaticDSP.Tasks;
@@ -21,10 +22,11 @@ namespace AutomaticDSP
         private ConfigEntry<bool> httpEnabled;
         private ConfigEntry<string> httpHost;
         private ConfigEntry<int> httpPort;
-        private ConfigEntry<int> snapshotIntervalTicks;
+        private ConfigEntry<int> queryIntervalTicks;
         private HistoryStore historyStore;
         private HttpApiServer httpServer;
-        private StateSnapshotService snapshotService;
+        private GameControlService gameControlService;
+        private GameStateQueryService stateQueryService;
         private TaskStateStore taskStateStore;
 
         private void Awake()
@@ -33,20 +35,21 @@ namespace AutomaticDSP
             httpEnabled = Config.Bind("HTTP", "Enabled", true, "Enable local read-only HTTP API.");
             httpHost = Config.Bind("HTTP", "Host", "127.0.0.1", "Local HTTP API bind host. Use 0.0.0.0 to listen on all interfaces; Windows may require an HTTP URLACL for that.");
             httpPort = Config.Bind("HTTP", "Port", 39270, "Local HTTP API port.");
-            snapshotIntervalTicks = Config.Bind("State", "SnapshotIntervalTicks", 60, "Game ticks between state snapshots.");
+            queryIntervalTicks = Config.Bind("State", "QueryIntervalTicks", 60, "Game ticks between state query batches.");
 
             var cacheRoot = Path.Combine(Paths.CachePath, PluginName);
             historyStore = new HistoryStore(cacheRoot, Logger);
             historyStore.Initialize();
 
             taskStateStore = new TaskStateStore();
-            snapshotService = new StateSnapshotService(snapshotIntervalTicks.Value, cacheRoot, Logger);
+            gameControlService = new GameControlService(Logger);
+            stateQueryService = new GameStateQueryService(queryIntervalTicks.Value, Logger);
 
             if (httpEnabled.Value)
             {
                 try
                 {
-                    httpServer = new HttpApiServer(httpHost.Value, httpPort.Value, snapshotService, taskStateStore, historyStore, Logger);
+                    httpServer = new HttpApiServer(httpHost.Value, httpPort.Value, stateQueryService, gameControlService, taskStateStore, historyStore, Logger);
                     httpServer.Start();
                 }
                 catch (System.Exception ex)
@@ -62,7 +65,8 @@ namespace AutomaticDSP
 
         private void Update()
         {
-            snapshotService?.Update();
+            stateQueryService?.Update();
+            gameControlService?.Update();
         }
 
         private void OnDestroy()

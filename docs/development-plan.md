@@ -4,24 +4,24 @@
 
 ## 当前方向
 
-AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设计参考：它对玩家位置使用高频同步，对统计、告警、研究、戴森球等状态使用较低频率或事件同步。AutomaticDSP 第一阶段不追求联机同步，只需要让外部 AI Agent 稳定观察游戏状态。
+AutomaticDSP 作为独立 BepInEx Mod 运行。Nebula 作为设计参考：它对玩家位置使用高频同步，对统计、告警、研究、戴森球等状态使用较低频率或事件同步。AutomaticDSP 第一阶段聚焦外部 AI Agent 的稳定状态观测。
 
 第一步采用简单模式：
 
-- HTTP 线程接收 `POST /game/state` 后只解析 GraphQL 字段选择并入队，不直接访问 DSP 游戏对象。
+- HTTP 线程接收 `POST /game/state` 后解析 GraphQL 字段选择并入队，DSP 游戏对象读取由游戏主线程完成。
 - 游戏主线程每 `60 game ticks` drain 待查询队列，并在主线程为每个请求生成最终 JSON，约 1 秒一次。
-- 任务状态不放进状态查询。
+- 任务状态通过独立任务接口查询。
 - `GET /tasks` 查询内存中的待执行或执行中任务。
 - `GET /history` 查询 SQLite 中已完成、失败或取消的历史命令。
-- 状态查询结果只保存在内存中，不默认输出快照文件；历史命令继续保存到 `BepInEx/cache/AutomaticDSP/data/history.sqlite`。
+- 状态查询结果保存在内存中；历史命令继续保存到 `BepInEx/cache/AutomaticDSP/data/history.sqlite`。
 - HTTP 服务使用 .NET 内置 `HttpListener`，JSON 序列化使用 `Newtonsoft.Json`。
 - HTTP 默认监听 `127.0.0.1:39270`，其中 `HTTP.Host` 和 `HTTP.Port` 都是配置项；需要外部访问时可以把 `HTTP.Host` 改成 `0.0.0.0`。
-- 未加载存档、主菜单、菜单演示或加载界面不接受 `/game/state` 查询，`GET /game` 返回轻量状态，并清理旧的 `snapshots/latest.json`、`snapshots/state.json`、`snapshots/galaxy.json`、`snapshots/transport.stations.json`、`snapshots/spheres.json`、早期 `dumps/gameData.json` 与早期 `diagnostics/gameMain.json`。
+- 对局外、主菜单、菜单演示和加载界面由 `GET /game` 返回轻量状态；对局就绪后由 `/game/state` 处理状态查询。
 
 采样间隔参考：
 
 - Nebula 的统计广播按 `time % 60 == 0` 节流，约 1 秒一次。
-- Nebula 的玩家移动同步是 10Hz，但 AutomaticDSP 第一阶段不做实时玩家同步。
+- Nebula 的玩家移动同步是 10Hz；AutomaticDSP 的实时移动控制进入后续阶段。
 - Nebula 的研究、戴森球、告警等状态使用 1-4 秒级别更新。
 
 ## 第一阶段目标：只读状态观测 MVP
@@ -36,22 +36,21 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 4. `POST /game/state` 能按 GraphQL 字段选择返回游戏状态。
 5. `GET /tasks` 能返回内存中的待执行或执行中任务；第一步可以为空列表。
 6. `GET /history` 能返回 SQLite 中的历史命令；第一步可以为空列表。
-7. HTTP 请求线程不直接读取 DSP 游戏对象。
+7. DSP 游戏对象读取由游戏主线程执行。
 8. 构建通过，游戏内日志无查询批处理异常。
 
-### 第一阶段不做
+### 后续阶段
 
 - 任务提交。
 - 任务执行。
 - 移动伊卡洛斯。
 - 背包制造。
 - 建造生产线。
-- Nebula 运行时依赖。
-- 全星系或全宇宙状态导出。
+- 全星系或全宇宙状态按需查询。
 
 ## 第一阶段状态查询内容
 
-状态查询按 AI Agent 玩游戏需要的决策信息组织，而不是直接暴露 DSP 内部对象。
+状态查询按 AI Agent 玩游戏需要的决策信息组织，输出稳定的状态 DTO。
 
 ### metadata
 
@@ -79,7 +78,7 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 
 ### GameMain 根系统
 
-以下字段作为 `/game/state` 顶层对象返回，来自 `GameMain` 或 `GameMain.data` 的根系统。它们使用手写摘要 DTO，不直接返回 Unity/DSP 运行时对象，也不暴露 `type/fields/properties` 这类反射 dump 结构：
+以下字段作为 `/game/state` 顶层对象返回，来自 `GameMain` 或 `GameMain.data` 的根系统。它们使用手写摘要 DTO，输出 AI Agent 可消费的结构化状态：
 
 - 基本类型、字符串、枚举、时间和值类型按稳定字段名输出。
 - `Vector3`、`VectorLF3` 和 `Quaternion` 转成可读 KV。
@@ -196,9 +195,9 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 
 ### GET /game
 
-返回主线程每 tick 维护的轻量游戏运行状态，不进入快照采集流程。
+返回主线程每 tick 维护的轻量游戏运行状态。
 
-未进入可查询对局时只返回：
+对局外返回：
 
 ```json
 {
@@ -268,14 +267,13 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 
 查询规则：
 
-- 只解析 GraphQL 查询 DSL，不提供 GraphQL schema。
-- 不做业务字段校验。
-- 不存在或不可读字段返回 `null`。
-- 复杂对象未选择子字段时返回 `{}`，避免把“对象存在但未展开”误判为不存在。
+- 解析 GraphQL 查询 DSL。
+- 字段按请求路径读取，读取失败以 `null` 表示。
+- 复杂对象默认展开一层可序列化字段。
 - 复杂列表默认最多返回 256 项，支持 `limit`、`offset` 和 `where`，单次 `limit` 上限为 2048。
 - 支持 `_schema` 查询根和对象上的 `_fields` 字段发现。
-- `where` 只作用于列表字段，条件按 AND 组合，过滤在分页前执行；不存在字段进入条件时视为匹配失败，不提供 `field_exists`。
-- 未进入可查询对局时返回 `409 game_not_ready`，不进入主线程查询队列。
+- `where` 作用于列表字段，条件按 AND 组合，过滤在分页前执行；条件字段读取失败时视为匹配失败。
+- 对局就绪前返回 `409 game_not_ready`。
 
 ### GET /tasks
 
@@ -322,9 +320,9 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 
 交付：
 
-- 配置项：端口、快照间隔 tick、是否启用 HTTP。
+- 配置项：端口、状态查询批处理间隔 tick、是否启用 HTTP。
 - 配置项：HTTP host 默认 `127.0.0.1`，HTTP port 默认 `39270`。
-- `StateSnapshotService`。
+- `GameStateQueryService`。
 - GraphQL 字段选择解析。
 - 主线程 60 tick 查询批处理。
 - `GET /game`。
@@ -337,8 +335,8 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 
 - `GET /game` 返回轻量游戏运行状态。
 - `POST /game/state` 能查询 metadata、game、GameMain、GameMain.data 和可序列化游戏对象字段。
-- 不进入游戏时接口返回明确状态，而不是异常。
-- 停留在主菜单或菜单演示时不会保留旧的 `latest.json`、拆分快照或早期 `gameData.json`。
+- 对局外接口返回明确状态。
+- 主菜单和菜单演示状态由 `GET /game` 表示。
 
 ### M2：状态完整性补齐
 
@@ -349,11 +347,11 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 - 当前行星矿脉和资源点。
 - 当前行星建筑摘要。
 - 产量、消耗和供电摘要。
-- 派生告警和建造上下文不放在 `/game/state`；后续根据建造命令需求设计独立 context/query。
+- 派生告警和建造上下文根据建造命令需求设计独立 context/query。
 
 验证：
 
-- AI Agent 能根据 `/game/state` 判断“能不能建一条铁块生产线”。
+- AI Agent 能根据 `/game/state` 判断铁块生产线建设条件。
 - 查询批处理耗时可观测。
 - 大列表查询有服务端上限或分页策略。
 
@@ -381,7 +379,7 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 - `moveTo` 命令。
 - `craftInventory` 命令。
 - 命令执行状态。
-- 错误码：缺材料、不可达、超时。
+- 错误码：缺材料、路径受阻、超时。
 
 验证：
 
@@ -432,18 +430,18 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 验证：
 
 - Agent 可以低成本获取小范围状态。
-- 大型工厂存档不会因为一次查询返回过多数据。
+- 大型工厂存档通过分页和上限控制单次响应规模。
 
 ## 实现约束
 
 - 所有 DSP 游戏对象读取必须发生在 Unity 主线程。
-- HTTP 请求线程只能读取不可变快照、内存任务状态或 SQLite 历史。
-- 快照 DTO 不暴露 DSP 内部对象引用。
-- 第一阶段优先摘要信息，避免全量导出巨大数组。
+- HTTP 请求线程只能读取主线程生成的查询结果、内存任务状态或 SQLite 历史。
+- 查询结果 DTO 使用稳定结构化字段。
+- 第一阶段优先摘要信息和分页列表。
 - 默认只监听 `127.0.0.1`。
 - 默认端口 `39270`。
-- SQLite 只存历史命令，不存完整游戏快照。
-- 状态查询不默认写入 JSON 快照文件；如需调试 dump，后续通过显式调试接口或配置开关实现。
+- SQLite 保存历史命令。
+- 调试数据导出后续通过显式调试接口或配置开关实现。
 
 ## 待确认问题
 

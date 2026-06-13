@@ -40,9 +40,10 @@ namespace AutomaticDSP.Storage
                             completed_at TEXT NULL,
                             error_code TEXT NULL,
                             error_message TEXT NULL,
-                            snapshot_game_tick INTEGER NULL
+                            game_tick INTEGER NULL
                         );";
                     command.ExecuteNonQuery();
+                    EnsureHistorySchema(connection);
                 }
 
                 available = true;
@@ -72,7 +73,7 @@ namespace AutomaticDSP.Storage
                 {
                     command.CommandText =
                         @"SELECT id, task_id, command_id, command_type, status, started_at, completed_at,
-                                 error_code, error_message, snapshot_game_tick
+                                 error_code, error_message, game_tick
                           FROM command_history
                           ORDER BY id DESC
                           LIMIT $limit;";
@@ -93,7 +94,7 @@ namespace AutomaticDSP.Storage
                                 ["completedAt"] = NullableString(reader, 6),
                                 ["errorCode"] = NullableString(reader, 7),
                                 ["errorMessage"] = NullableString(reader, 8),
-                                ["snapshotGameTick"] = reader.IsDBNull(9) ? (object)null : reader.GetInt64(9)
+                                ["gameTick"] = reader.IsDBNull(9) ? (object)null : reader.GetInt64(9)
                             });
                         }
                     }
@@ -107,6 +108,49 @@ namespace AutomaticDSP.Storage
             }
 
             return HistoryResponse(items);
+        }
+
+        private static void EnsureHistorySchema(SQLiteConnection connection)
+        {
+            var hasGameTick = false;
+            var hasLegacySnapshotGameTick = false;
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = "PRAGMA table_info(command_history);";
+                using (var reader = command.ExecuteReader())
+                {
+                    while (reader.Read())
+                    {
+                        var name = reader.GetString(1);
+                        if (name == "game_tick")
+                        {
+                            hasGameTick = true;
+                        }
+                        else if (name == "snapshot_game_tick")
+                        {
+                            hasLegacySnapshotGameTick = true;
+                        }
+                    }
+                }
+            }
+
+            if (!hasGameTick)
+            {
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText = "ALTER TABLE command_history ADD COLUMN game_tick INTEGER NULL;";
+                    command.ExecuteNonQuery();
+                }
+            }
+
+            if (hasLegacySnapshotGameTick)
+            {
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText = "UPDATE command_history SET game_tick = snapshot_game_tick WHERE game_tick IS NULL;";
+                    command.ExecuteNonQuery();
+                }
+            }
         }
 
         public void Dispose()

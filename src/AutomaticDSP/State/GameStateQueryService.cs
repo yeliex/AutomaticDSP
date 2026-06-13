@@ -2,7 +2,6 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
-using System.IO;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
@@ -12,45 +11,27 @@ using UnityEngine;
 
 namespace AutomaticDSP.State
 {
-    internal sealed class StateSnapshotService
+    internal sealed class GameStateQueryService
     {
         private const int DefaultQueryListLimit = 256;
         private const int MaxQueryListLimit = 2048;
         private const int MaxQueryDepth = 16;
         private const int OneLevelMemberLimit = 128;
         private const int SpaceObjectSampleLimit = 128;
-        private static readonly string[] SnapshotFileNames =
-        {
-            "latest.json",
-            "state.json",
-            "galaxy.json",
-            "transport.stations.json",
-            "spheres.json",
-            "localPlanet.factories.json"
-        };
-
         private readonly ManualLogSource log;
-        private readonly int snapshotIntervalTicks;
+        private readonly int queryIntervalTicks;
         private readonly object queryLock = new object();
         private readonly List<PendingStateQuery> pendingStateQueries = new List<PendingStateQuery>();
-        private readonly string staleDumpDirectory;
-        private readonly string staleDiagnosticsDirectory;
-        private readonly string snapshotDirectory;
         private long lastQueryDispatchGameTick = -1;
         private bool inactiveLogged;
-        private bool inactiveSnapshotFileChecked;
         private string inactiveReasonLogged;
         private JsonObject latestGameStatus;
 
-        public StateSnapshotService(int snapshotIntervalTicks, string cacheRootPath, ManualLogSource log)
+        public GameStateQueryService(int queryIntervalTicks, ManualLogSource log)
         {
-            this.snapshotIntervalTicks = Math.Max(1, snapshotIntervalTicks);
-            staleDumpDirectory = Path.Combine(cacheRootPath, "dumps");
-            staleDiagnosticsDirectory = Path.Combine(cacheRootPath, "diagnostics");
-            snapshotDirectory = Path.Combine(cacheRootPath, "snapshots");
+            this.queryIntervalTicks = Math.Max(1, queryIntervalTicks);
             this.log = log;
             latestGameStatus = CaptureGameStatus();
-            ClearPersistedSnapshots();
         }
 
         public JsonObject GetGameStatus()
@@ -106,7 +87,7 @@ namespace AutomaticDSP.State
                 return;
             }
 
-            if (gameTick == lastQueryDispatchGameTick || gameTick % snapshotIntervalTicks != 0)
+            if (gameTick == lastQueryDispatchGameTick || gameTick % queryIntervalTicks != 0)
             {
                 return;
             }
@@ -189,15 +170,9 @@ namespace AutomaticDSP.State
 
         private void MarkSessionUnavailable(string reason)
         {
-            if (!inactiveSnapshotFileChecked)
-            {
-                ClearPersistedSnapshots();
-                inactiveSnapshotFileChecked = true;
-            }
-
             if (!inactiveLogged || inactiveReasonLogged != reason)
             {
-                log.LogInfo($"AutomaticDSP state snapshot is waiting for a loaded game session: {reason}.");
+                log.LogInfo($"AutomaticDSP state query is waiting for a loaded game session: {reason}.");
                 inactiveLogged = true;
                 inactiveReasonLogged = reason;
             }
@@ -1149,97 +1124,6 @@ namespace AutomaticDSP.State
                 name == "Quaternion";
         }
 
-        private void ClearPersistedSnapshots()
-        {
-            DeleteLatestSnapshot();
-            DeleteStaleGameDataDump();
-            DeleteStaleDiagnostics();
-        }
-
-        private void DeleteLatestSnapshot()
-        {
-            try
-            {
-                for (var i = 0; i < SnapshotFileNames.Length; i++)
-                {
-                    DeleteSnapshotFile(SnapshotFileNames[i]);
-                }
-            }
-            catch (Exception ex)
-            {
-                log.LogWarning($"Failed to delete stale state snapshot: {ex.Message}");
-            }
-        }
-
-        private void DeleteSnapshotFile(string fileName)
-        {
-            var snapshotPath = Path.Combine(snapshotDirectory, fileName);
-            var tempPath = snapshotPath + ".tmp";
-            if (File.Exists(tempPath))
-            {
-                File.Delete(tempPath);
-            }
-
-            if (File.Exists(snapshotPath))
-            {
-                File.Delete(snapshotPath);
-            }
-        }
-
-        private void DeleteStaleGameDataDump()
-        {
-            try
-            {
-                var dumpPath = Path.Combine(staleDumpDirectory, "gameData.json");
-                var tempPath = dumpPath + ".tmp";
-                if (File.Exists(tempPath))
-                {
-                    File.Delete(tempPath);
-                }
-
-                if (File.Exists(dumpPath))
-                {
-                    File.Delete(dumpPath);
-                }
-
-                if (Directory.Exists(staleDumpDirectory) && Directory.GetFiles(staleDumpDirectory).Length == 0)
-                {
-                    Directory.Delete(staleDumpDirectory);
-                }
-            }
-            catch (Exception ex)
-            {
-                log.LogWarning($"Failed to delete stale GameData dump: {ex.Message}");
-            }
-        }
-
-        private void DeleteStaleDiagnostics()
-        {
-            try
-            {
-                var diagnosticsPath = Path.Combine(staleDiagnosticsDirectory, "gameMain.json");
-                var tempPath = diagnosticsPath + ".tmp";
-                if (File.Exists(tempPath))
-                {
-                    File.Delete(tempPath);
-                }
-
-                if (File.Exists(diagnosticsPath))
-                {
-                    File.Delete(diagnosticsPath);
-                }
-
-                if (Directory.Exists(staleDiagnosticsDirectory) && Directory.GetFiles(staleDiagnosticsDirectory).Length == 0)
-                {
-                    Directory.Delete(staleDiagnosticsDirectory);
-                }
-            }
-            catch (Exception ex)
-            {
-                log.LogWarning($"Failed to delete stale diagnostics: {ex.Message}");
-            }
-        }
-
         private JsonObject CaptureGameState()
         {
             var data = GameMain.data;
@@ -1342,13 +1226,23 @@ namespace AutomaticDSP.State
                 return "error";
             }
 
+            if (!IsPreloadReady())
+            {
+                return "loading";
+            }
+
             if (SafeBool(() => GameMain.isLoading))
             {
                 return "loading";
             }
 
             var data = SafeValue(() => GameMain.data);
-            if (data == null || SafeBool(() => DSPGame.IsMenuDemo) || IsGameMainMenuDemo())
+            if (data == null)
+            {
+                return IsGameStartRequested() ? "loading" : "menu";
+            }
+
+            if (SafeBool(() => DSPGame.IsMenuDemo) || IsGameMainMenuDemo())
             {
                 return "menu";
             }
@@ -3872,9 +3766,14 @@ namespace AutomaticDSP.State
         {
             try
             {
+                if (!IsPreloadReady())
+                {
+                    return "game_preloading";
+                }
+
                 if (GameMain.data == null)
                 {
-                    return "game_data_missing";
+                    return IsGameStartRequested() ? "game_loading" : "game_data_missing";
                 }
 
                 if (GameMain.isLoading)
@@ -3903,6 +3802,24 @@ namespace AutomaticDSP.State
             {
                 return "exception_" + ex.GetType().Name;
             }
+        }
+
+        private static bool IsPreloadReady()
+        {
+            try
+            {
+                return VFPreload.done && VFPreload.dbDone;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool IsGameStartRequested()
+        {
+            return SafeValue(() => DSPGame.GameDesc) != null ||
+                !string.IsNullOrEmpty(SafeValue(() => DSPGame.LoadFile) as string);
         }
 
         private static bool IsGameMainMenuDemo()

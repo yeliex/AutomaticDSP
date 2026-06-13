@@ -37,25 +37,63 @@ Content-Type: application/json; charset=utf-8
 - `200`：请求成功。
 - `204`：`OPTIONS` preflight 成功。
 - `400`：请求体或 GraphQL 查询语法错误。
-- `404`：未知路径。
-- `405`：HTTP 方法不支持。
-- `409`：游戏未进入可查询对局。
+- `404`：路径匹配失败。
+- `405`：HTTP 方法匹配失败。
+- `409`：游戏处于对局就绪前状态。
 - `504`：等待下一次游戏查询 tick 超时。
 
 ## GET /game
 
-轻量游戏状态探针。这个接口不进入状态查询队列，可用于判断是否可以调用 `POST /game/state`。
+轻量游戏状态探针。这个接口直接返回主线程维护的运行状态，可用于判断是否可以调用 `POST /game/state`。
 
-未进入可查询对局时：
+对局外状态：
 
 ```json
 {
   "ready": false,
-  "status": "menu"
+  "status": "menu",
+  "controls": {
+    "canCreateNewGame": true,
+    "canLoadSave": true,
+    "canSave": false,
+    "canSkipPrologue": false
+  },
+  "newGameDefaults": {
+    "galaxyAlgo": 20200403,
+    "galaxySeed": 12345678,
+    "galaxySeedText": "12345678",
+    "starCount": 64,
+    "playerProto": 1,
+    "resourceMultiplier": 1,
+    "mode": "combat",
+    "isPeaceMode": false,
+    "isCombatMode": true,
+    "isSandboxMode": false,
+    "skipPrologue": true,
+    "goalLevel": "Full",
+    "combatSettings": {}
+  },
+  "newGameParameters": {
+    "setForNewGame": ["galaxyAlgo", "galaxySeed", "starCount", "playerProto", "resourceMultiplier"],
+    "mode": ["combat", "peace"],
+    "booleans": ["isCombatMode", "combatMode", "isPeaceMode", "peaceMode", "isSandboxMode", "sandbox", "skipPrologue"],
+    "goalLevel": ["None", "Off", "Key", "Full"],
+    "combatSettings": [
+      "aggressiveness",
+      "initialLevel",
+      "initialGrowth",
+      "initialColonize",
+      "maxDensity",
+      "growthSpeedFactor",
+      "powerThreatFactor",
+      "battleThreatFactor",
+      "battleExpFactor"
+    ]
+  }
 }
 ```
 
-进入可查询对局时：
+可查询对局状态：
 
 ```json
 {
@@ -88,6 +126,97 @@ Content-Type: application/json; charset=utf-8
 - `menu`
 - `unknown`
 
+`newGameDefaults.galaxySeed` 每次响应会生成一个新的 8 位随机整数，可直接用于 `POST /game`。`galaxySeedText` 是补零后的显示形式。
+
+## POST /game
+
+创建新游戏。只能在 `GET /game` 返回 `status: "menu"` 时调用。请求体可以为空，默认会创建战斗模式、非沙盒、跳过序幕的新游戏。
+
+默认值：
+
+- `galaxyAlgo = UniverseGen.algoVersion`
+- `galaxySeed = 8 位随机整数`
+- `starCount = 64`
+- `playerProto = 1`
+- `resourceMultiplier = 1`
+- `mode = "combat"`
+- `isSandboxMode = false`
+- `skipPrologue = true`
+- `goalLevel = "Full"`
+- `combatSettings = CombatSettings.SetDefault()`
+
+完整请求示例：
+
+```json
+{
+  "galaxyAlgo": 20200403,
+  "galaxySeed": 12345678,
+  "starCount": 64,
+  "playerProto": 1,
+  "resourceMultiplier": 1,
+  "mode": "combat",
+  "isSandboxMode": false,
+  "skipPrologue": true,
+  "goalLevel": "Full",
+  "combatSettings": {
+    "aggressiveness": 1,
+    "initialLevel": 0,
+    "initialGrowth": 1,
+    "initialColonize": 1,
+    "maxDensity": 1,
+    "growthSpeedFactor": 1,
+    "powerThreatFactor": 1,
+    "battleThreatFactor": 1,
+    "battleExpFactor": 1
+  }
+}
+```
+
+和平和战斗是互斥模式，可以使用任意一种写法：
+
+```json
+{ "mode": "peace" }
+```
+
+```json
+{ "isPeaceMode": true }
+```
+
+```json
+{ "isCombatMode": true }
+```
+
+沙盒可与和平/战斗模式组合：
+
+```json
+{
+  "mode": "combat",
+  "isSandboxMode": true
+}
+```
+
+成功响应：
+
+```json
+{
+  "started": true,
+  "status": "loading",
+  "desc": {
+    "galaxyAlgo": 20200403,
+    "galaxySeed": 12345678,
+    "galaxySeedText": "12345678",
+    "starCount": 64,
+    "playerProto": 1,
+    "resourceMultiplier": 1,
+    "isPeaceMode": false,
+    "isCombatMode": true,
+    "isSandboxMode": false,
+    "goalLevel": "Full"
+  },
+  "skipPrologue": true
+}
+```
+
 ## POST /game/state
 
 按需查询游戏状态。请求会进入主线程查询队列，由游戏主线程在查询 tick 读取 DSP 对象并生成最终 JSON。
@@ -101,7 +230,7 @@ Content-Type: application/json; charset=utf-8
 }
 ```
 
-`operationName` 可省略。`query` 必须是 GraphQL query operation，不支持 mutation。
+`operationName` 可省略。`query` 使用 GraphQL query operation。
 
 成功响应：
 
@@ -116,7 +245,7 @@ Content-Type: application/json; charset=utf-8
 }
 ```
 
-未进入可查询对局时：
+对局就绪前：
 
 ```json
 {
@@ -130,9 +259,103 @@ Content-Type: application/json; charset=utf-8
 
 查询语法见 [查询语法文档](query-syntax.md)。
 
+## GET /game/saves
+
+获取存档列表和基本信息。该接口会读取游戏存档目录下的 `.dsv` 文件，并尽量解析 header、`GameDesc` 和元数据属性。
+
+```json
+{
+  "saveFolder": "C:/Users/name/Documents/Dyson Sphere Program/Save/",
+  "count": 1,
+  "items": [
+    {
+      "saveName": "auto-test",
+      "fileName": "auto-test.dsv",
+      "path": "C:/Users/name/Documents/Dyson Sphere Program/Save/auto-test.dsv",
+      "isUserSave": true,
+      "fileSize": 123456,
+      "lastWriteTimeUtc": "2026-06-13T12:00:00Z",
+      "header": {
+        "headerVersion": 7,
+        "lastSaveVersion": "0.10.34.0",
+        "gameTick": 123456,
+        "saveTime": "2026-06-13T12:00:00Z"
+      },
+      "desc": {
+        "galaxySeed": 12345678,
+        "galaxySeedText": "12345678",
+        "starCount": 64,
+        "resourceMultiplier": 1,
+        "isPeaceMode": false,
+        "isCombatMode": true,
+        "isSandboxMode": false
+      }
+    }
+  ]
+}
+```
+
+## POST /game/save
+
+保存当前游戏。调用状态为已加载对局。
+
+请求体：
+
+```json
+{
+  "saveName": "auto-test"
+}
+```
+
+成功响应：
+
+```json
+{
+  "saved": true,
+  "saveName": "auto-test",
+  "path": "C:/Users/name/Documents/Dyson Sphere Program/Save/auto-test.dsv",
+  "status": "running"
+}
+```
+
+## POST /game/load
+
+加载存档。调用状态为 `menu`。
+
+请求体：
+
+```json
+{
+  "saveName": "auto-test"
+}
+```
+
+成功响应：
+
+```json
+{
+  "started": true,
+  "saveName": "auto-test",
+  "status": "loading"
+}
+```
+
+菜单以外状态返回 `409 invalid_game_status`。
+
+## POST /game/prologue/skip
+
+跳过当前序幕。`status: "prologue"` 时执行跳过；其他状态返回 `skipped: false`。
+
+```json
+{
+  "skipped": true,
+  "status": "running"
+}
+```
+
 ## GET /tasks
 
-查询当前进程内待执行或执行中的任务。M1 还未实现任务提交和执行，因此当前通常返回空列表。
+查询当前进程内待执行或执行中的任务。M1 当前返回空列表。
 
 ```json
 {
@@ -140,7 +363,7 @@ Content-Type: application/json; charset=utf-8
 }
 ```
 
-任务不放在 `/game/state` 查询中；后续任务提交、取消和命令状态会继续走独立任务接口。
+任务提交、取消和命令状态通过独立任务接口处理。
 
 ## GET /history
 
@@ -161,7 +384,7 @@ Content-Type: application/json; charset=utf-8
       "completedAt": "2026-06-13T12:00:01",
       "errorCode": null,
       "errorMessage": null,
-      "snapshotGameTick": 123456
+      "gameTick": 123456
     }
   ]
 }
@@ -179,6 +402,16 @@ PowerShell 查询轻量状态：
 
 ```powershell
 Invoke-RestMethod -Uri http://127.0.0.1:39270/game
+```
+
+PowerShell 创建默认新游戏：
+
+```powershell
+Invoke-RestMethod `
+  -Method Post `
+  -Uri http://127.0.0.1:39270/game `
+  -ContentType 'application/json' `
+  -Body '{}'
 ```
 
 PowerShell 查询游戏状态：

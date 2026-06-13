@@ -4,6 +4,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using AutomaticDSP.Serialization;
+using AutomaticDSP.GameControl;
 using AutomaticDSP.State;
 using AutomaticDSP.Storage;
 using AutomaticDSP.Tasks;
@@ -16,12 +17,14 @@ namespace AutomaticDSP.Api
 {
     internal sealed class HttpApiServer : IDisposable
     {
+        private static readonly TimeSpan GameControlTimeout = TimeSpan.FromSeconds(120);
         private static readonly TimeSpan StateQueryTimeout = TimeSpan.FromSeconds(10);
+        private readonly GameControlService gameControlService;
         private readonly HistoryStore historyStore;
         private readonly string host;
         private readonly ManualLogSource log;
         private readonly int port;
-        private readonly StateSnapshotService snapshotService;
+        private readonly GameStateQueryService stateQueryService;
         private readonly TaskStateStore taskStateStore;
         private CancellationTokenSource cancellation;
         private HttpListener listener;
@@ -35,14 +38,16 @@ namespace AutomaticDSP.Api
         public HttpApiServer(
             string host,
             int port,
-            StateSnapshotService snapshotService,
+            GameStateQueryService stateQueryService,
+            GameControlService gameControlService,
             TaskStateStore taskStateStore,
             HistoryStore historyStore,
             ManualLogSource log)
         {
             this.host = string.IsNullOrWhiteSpace(host) ? "127.0.0.1" : host.Trim();
             this.port = port;
-            this.snapshotService = snapshotService;
+            this.stateQueryService = stateQueryService;
+            this.gameControlService = gameControlService;
             this.taskStateStore = taskStateStore;
             this.historyStore = historyStore;
             this.log = log;
@@ -108,13 +113,18 @@ namespace AutomaticDSP.Api
 
                 if (path == "/game")
                 {
-                    if (!IsGet(context))
+                    if (IsGet(context))
                     {
-                        WriteJson(context, 405, Error("method_not_allowed", "Only GET is supported for /game."));
-                        return;
+                        HandleGameStatus(context);
                     }
-
-                    WriteJson(context, 200, snapshotService.GetGameStatus());
+                    else if (string.Equals(context.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
+                    {
+                        HandleCreateGame(context);
+                    }
+                    else
+                    {
+                        WriteJson(context, 405, Error("method_not_allowed", "Only GET and POST are supported for /game."));
+                    }
                 }
                 else if (path == "/game/state")
                 {
@@ -125,6 +135,49 @@ namespace AutomaticDSP.Api
                     else
                     {
                         HandleStateQuery(context);
+                    }
+                }
+                else if (path == "/game/saves")
+                {
+                    if (!IsGet(context))
+                    {
+                        WriteJson(context, 405, Error("method_not_allowed", "Only GET is supported for /game/saves."));
+                        return;
+                    }
+
+                    WriteJson(context, 200, gameControlService.ListSaves());
+                }
+                else if (path == "/game/save")
+                {
+                    if (!string.Equals(context.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
+                    {
+                        WriteJson(context, 405, Error("method_not_allowed", "Only POST is supported for /game/save."));
+                    }
+                    else
+                    {
+                        HandleSaveGame(context);
+                    }
+                }
+                else if (path == "/game/load")
+                {
+                    if (!string.Equals(context.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
+                    {
+                        WriteJson(context, 405, Error("method_not_allowed", "Only POST is supported for /game/load."));
+                    }
+                    else
+                    {
+                        HandleLoadGame(context);
+                    }
+                }
+                else if (path == "/game/prologue/skip")
+                {
+                    if (!string.Equals(context.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
+                    {
+                        WriteJson(context, 405, Error("method_not_allowed", "Only POST is supported for /game/prologue/skip."));
+                    }
+                    else
+                    {
+                        HandleGameControl(context, () => gameControlService.SkipPrologue());
                     }
                 }
                 else if (path == "/tasks")
@@ -152,16 +205,121 @@ namespace AutomaticDSP.Api
                     WriteJson(context, 404, Error("not_found", $"Unknown endpoint: {path}"));
                 }
             }
+            catch (ThreadAbortException ex)
+            {
+                Thread.ResetAbort();
+                log.LogWarning($"HTTP request aborted: {ex.Message}");
+            }
             catch (Exception ex)
             {
                 log.LogWarning($"HTTP request failed: {ex}");
-                WriteJson(context, 500, Error("internal_error", ex.Message));
+                try
+                {
+                    WriteJson(context, 500, Error("internal_error", ex.Message));
+                }
+                catch (Exception writeEx)
+                {
+                    log.LogWarning($"Failed to write HTTP error response: {writeEx.Message}");
+                }
+            }
+        }
+
+        private void HandleGameStatus(HttpListenerContext context)
+        {
+            var source = stateQueryService.GetGameStatus();
+            var response = new JsonObject();
+            foreach (var pair in source)
+            {
+                response[pair.Key] = pair.Value;
+            }
+
+            var status = response.TryGetValue("status", out var value) ? value?.ToString() : "unknown";
+            response["controls"] = gameControlService.ControlAvailability(status);
+            response["newGameDefaults"] = gameControlService.NewGameDefaults();
+            response["newGameParameters"] = gameControlService.NewGameParameters();
+            WriteJson(context, 200, response);
+        }
+
+        private void HandleCreateGame(HttpListenerContext context)
+        {
+            NewGameRequest request;
+            try
+            {
+                request = ReadJsonRequest<NewGameRequest>(context, allowEmpty: true) ?? new NewGameRequest();
+            }
+            catch (JsonException ex)
+            {
+                WriteJson(context, 400, Error("bad_json", ex.Message));
+                return;
+            }
+
+            HandleGameControl(context, timeout =>
+            {
+                var options = gameControlService.NormalizeNewGameOptions(request);
+                return gameControlService.EnqueueCreateNewGame(options, timeout);
+            });
+        }
+
+        private void HandleSaveGame(HttpListenerContext context)
+        {
+            SaveNameRequest request;
+            try
+            {
+                request = ReadJsonRequest<SaveNameRequest>(context, allowEmpty: false);
+            }
+            catch (JsonException ex)
+            {
+                WriteJson(context, 400, Error("bad_json", ex.Message));
+                return;
+            }
+
+            HandleGameControl(context, () => gameControlService.SaveCurrentGame(request?.SaveName));
+        }
+
+        private void HandleLoadGame(HttpListenerContext context)
+        {
+            SaveNameRequest request;
+            try
+            {
+                request = ReadJsonRequest<SaveNameRequest>(context, allowEmpty: false);
+            }
+            catch (JsonException ex)
+            {
+                WriteJson(context, 400, Error("bad_json", ex.Message));
+                return;
+            }
+
+            HandleGameControl(context, timeout => gameControlService.EnqueueLoadGame(request?.SaveName, timeout));
+        }
+
+        private void HandleGameControl(HttpListenerContext context, Func<JsonObject> action)
+        {
+            HandleGameControl(context, timeout => gameControlService.Enqueue(action, timeout));
+        }
+
+        private void HandleGameControl(HttpListenerContext context, Func<CancellationToken, Task<JsonObject>> action)
+        {
+            try
+            {
+                using (var timeout = new CancellationTokenSource(GameControlTimeout))
+                {
+                    var data = action(timeout.Token).GetAwaiter().GetResult();
+                    WriteJson(context, 200, data);
+                }
+            }
+            catch (GameControlException ex)
+            {
+                WriteJson(context, GameControlStatusCode(ex.Code), ControlError(ex));
+            }
+            catch (OperationCanceledException)
+            {
+                WriteJson(context, 504, Error("control_timeout", "Timed out waiting for the next game control tick."));
             }
         }
 
         private void HandleStateQuery(HttpListenerContext context)
         {
-            if (!snapshotService.IsStateQueryReady(out var status))
+            if (!stateQueryService.IsStateQueryReady(out var status))
             {
                 WriteJson(context, 409, StateNotReady(status));
                 return;
@@ -203,7 +361,7 @@ namespace AutomaticDSP.Api
             {
                 using (var timeout = new CancellationTokenSource(StateQueryTimeout))
                 {
-                    var data = snapshotService.EnqueueStateQuery(plan, timeout.Token).GetAwaiter().GetResult();
+                    var data = stateQueryService.EnqueueStateQuery(plan, timeout.Token).GetAwaiter().GetResult();
                     WriteJson(context, 200, new JsonObject { ["data"] = data });
                 }
             }
@@ -219,10 +377,21 @@ namespace AutomaticDSP.Api
 
         private static StateQueryRequest ReadStateQueryRequest(HttpListenerContext context)
         {
+            return ReadJsonRequest<StateQueryRequest>(context, allowEmpty: false);
+        }
+
+        private static T ReadJsonRequest<T>(HttpListenerContext context, bool allowEmpty)
+            where T : class
+        {
             using (var reader = new System.IO.StreamReader(context.Request.InputStream, context.Request.ContentEncoding ?? Encoding.UTF8))
             {
                 var body = reader.ReadToEnd();
-                return JsonConvert.DeserializeObject<StateQueryRequest>(body);
+                if (string.IsNullOrWhiteSpace(body))
+                {
+                    return allowEmpty ? null : throw new JsonException("Request body is empty.");
+                }
+
+                return JsonConvert.DeserializeObject<T>(body);
             }
         }
 
@@ -249,6 +418,34 @@ namespace AutomaticDSP.Api
                     ["status"] = status
                 }
             };
+        }
+
+        private static object ControlError(GameControlException ex)
+        {
+            return new JsonObject
+            {
+                ["error"] = new JsonObject
+                {
+                    ["code"] = ex.Code,
+                    ["message"] = ex.Message,
+                    ["status"] = ex.Status
+                }
+            };
+        }
+
+        private static int GameControlStatusCode(string code)
+        {
+            switch (code)
+            {
+                case "bad_request":
+                    return 400;
+                case "save_not_found":
+                    return 404;
+                case "invalid_game_status":
+                    return 409;
+                default:
+                    return 400;
+            }
         }
 
         private static bool IsGet(HttpListenerContext context)
@@ -323,6 +520,11 @@ namespace AutomaticDSP.Api
             public string Query { get; set; }
 
             public string OperationName { get; set; }
+        }
+
+        private sealed class SaveNameRequest
+        {
+            public string SaveName { get; set; }
         }
     }
 }

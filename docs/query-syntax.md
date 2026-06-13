@@ -1,6 +1,6 @@
 # AutomaticDSP 查询语法文档
 
-`POST /game/state` 使用 GraphQL 查询语法作为字段选择 DSL。它只解析 query AST，不提供完整 GraphQL 服务。
+`POST /game/state` 使用 GraphQL 查询语法作为字段选择 DSL。它解析 query AST 并生成状态字段选择计划。
 
 当前支持：
 
@@ -13,15 +13,13 @@
 - `_schema` 查询根。
 - 任意对象上的 `_fields` 字段发现。
 
-当前不支持：
+当前支持范围：
 
-- mutation。
-- subscription。
-- GraphQL schema 和标准 introspection。
-- GraphQL 变量求值。
-- 业务字段校验。
-- `orderBy` 和空间过滤。
-- 查询时修改游戏状态。
+- query operation。
+- 字段选择、别名、fragment 和 inline fragment。
+- 列表分页与 `where` 过滤。
+- `_schema` 查询根和对象 `_fields` 字段发现。
+- 游戏状态读取。
 
 ## 请求格式
 
@@ -37,13 +35,13 @@
 ## 返回规则
 
 - 查询成功时返回 `{ "data": ... }`。
-- 不存在或不可读字段返回 `null`。
-- 复杂对象未选择子字段时返回一层可序列化字段。
-- Unity 对象、委托、渲染对象和其他不可安全序列化对象不会直接返回。
+- 字段读取失败以 `null` 表示。
+- 复杂对象默认返回一层可序列化字段。
+- Unity 对象、委托、渲染对象和其他运行时对象通过安全 JSON 形状输出。
 - 列表默认最多返回 256 项，单次 `limit` 上限为 2048。
-- 未进入可查询对局时返回 `409 game_not_ready`。
+- 对局就绪前返回 `409 game_not_ready`。
 
-复杂对象未选择子字段时返回一层字段，目的是帮助探索对象结构。例如：
+复杂对象默认返回一层字段，目的是帮助探索对象结构。例如：
 
 ```graphql
 query Explore {
@@ -73,7 +71,7 @@ query Explore {
 - `production`
 - `power`
 
-未知根字段会按 `GameMain` 静态成员、`GameMain.instance` 成员、`GameMain.data` 成员依次尝试读取。
+扩展根字段会按 `GameMain` 静态成员、`GameMain.instance` 成员、`GameMain.data` 成员依次尝试读取。
 
 ## 字段发现
 
@@ -105,7 +103,7 @@ query DiscoverLocalPlanet {
 }
 ```
 
-`_fields` 只返回当前对象上一层可查询字段。它会过滤 Unity 运行时对象、渲染对象、委托和不适合 JSON 输出的对象。
+`_fields` 返回当前对象上一层可查询字段，并聚焦可 JSON 输出的字段。
 
 ## 字段选择
 
@@ -149,7 +147,7 @@ query Explore {
 
 ## 别名
 
-同一个字段需要使用不同参数读取时，必须使用别名：
+同一个字段需要使用多组参数读取时，需要使用别名：
 
 ```graphql
 query PagedFactory {
@@ -222,7 +220,7 @@ query FilterFactory {
 }
 ```
 
-所有 `where` 条件按 AND 组合。不存在字段进入条件时视为匹配失败，不提供 `field_exists`。
+所有 `where` 条件按 AND 组合。条件字段读取失败时视为匹配失败。
 
 ### 操作符
 
@@ -234,7 +232,7 @@ where: { protoId: 2301 }
 
 已支持后缀：
 
-- `_ne`：不等于。
+- `_ne`：差异匹配。
 - `_gt`：大于。
 - `_gte`：大于等于。
 - `_lt`：小于。
