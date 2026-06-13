@@ -20,7 +20,7 @@ http://127.0.0.1:39270/
 - `HTTP.Host = 127.0.0.1`
 - `HTTP.Port = 39270`
 
-需要从其他机器访问时，可以在 BepInEx 配置中把 `HTTP.Host` 改为 `0.0.0.0`。
+需要从其他机器访问时，可以在 BepInEx 配置中把 `HTTP.Host` 改为 `0.0.0.0`。Windows 的 `HttpListener` 可能还需要为 `http://*:39270/` 添加 URLACL。
 
 可用端点：
 

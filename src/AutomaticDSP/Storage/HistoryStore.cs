@@ -11,6 +11,8 @@ namespace AutomaticDSP.Storage
     {
         private readonly string databasePath;
         private readonly ManualLogSource log;
+        private bool available;
+        private string unavailableReason;
 
         public HistoryStore(string cacheRootPath, ManualLogSource log)
         {
@@ -20,69 +22,91 @@ namespace AutomaticDSP.Storage
 
         public void Initialize()
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(databasePath));
-
-            using (var connection = OpenConnection())
-            using (var command = connection.CreateCommand())
+            try
             {
-                command.CommandText =
-                    @"CREATE TABLE IF NOT EXISTS command_history (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        task_id TEXT NULL,
-                        command_id TEXT NULL,
-                        command_type TEXT NULL,
-                        status TEXT NOT NULL,
-                        started_at TEXT NULL,
-                        completed_at TEXT NULL,
-                        error_code TEXT NULL,
-                        error_message TEXT NULL,
-                        snapshot_game_tick INTEGER NULL
-                    );";
-                command.ExecuteNonQuery();
-            }
+                Directory.CreateDirectory(Path.GetDirectoryName(databasePath));
 
-            log.LogInfo($"AutomaticDSP history database ready: {databasePath}");
+                using (var connection = OpenConnection())
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText =
+                        @"CREATE TABLE IF NOT EXISTS command_history (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            task_id TEXT NULL,
+                            command_id TEXT NULL,
+                            command_type TEXT NULL,
+                            status TEXT NOT NULL,
+                            started_at TEXT NULL,
+                            completed_at TEXT NULL,
+                            error_code TEXT NULL,
+                            error_message TEXT NULL,
+                            snapshot_game_tick INTEGER NULL
+                        );";
+                    command.ExecuteNonQuery();
+                }
+
+                available = true;
+                unavailableReason = null;
+                log.LogInfo($"AutomaticDSP history database ready: {databasePath}");
+            }
+            catch (Exception ex)
+            {
+                available = false;
+                unavailableReason = ex.GetType().Name + ": " + ex.Message;
+                log.LogWarning($"AutomaticDSP history database unavailable: {unavailableReason}");
+            }
         }
 
         public JsonObject GetHistoryResponse(int limit)
         {
             var items = new List<object>();
-            using (var connection = OpenConnection())
-            using (var command = connection.CreateCommand())
+            if (!available)
             {
-                command.CommandText =
-                    @"SELECT id, task_id, command_id, command_type, status, started_at, completed_at,
-                             error_code, error_message, snapshot_game_tick
-                      FROM command_history
-                      ORDER BY id DESC
-                      LIMIT $limit;";
-                command.Parameters.AddWithValue("$limit", limit);
+                return HistoryResponse(items);
+            }
 
-                using (var reader = command.ExecuteReader())
+            try
+            {
+                using (var connection = OpenConnection())
+                using (var command = connection.CreateCommand())
                 {
-                    while (reader.Read())
+                    command.CommandText =
+                        @"SELECT id, task_id, command_id, command_type, status, started_at, completed_at,
+                                 error_code, error_message, snapshot_game_tick
+                          FROM command_history
+                          ORDER BY id DESC
+                          LIMIT $limit;";
+                    command.Parameters.AddWithValue("$limit", limit);
+
+                    using (var reader = command.ExecuteReader())
                     {
-                        items.Add(new JsonObject
+                        while (reader.Read())
                         {
-                            ["id"] = reader.GetInt64(0),
-                            ["taskId"] = NullableString(reader, 1),
-                            ["commandId"] = NullableString(reader, 2),
-                            ["commandType"] = NullableString(reader, 3),
-                            ["status"] = reader.GetString(4),
-                            ["startedAt"] = NullableString(reader, 5),
-                            ["completedAt"] = NullableString(reader, 6),
-                            ["errorCode"] = NullableString(reader, 7),
-                            ["errorMessage"] = NullableString(reader, 8),
-                            ["snapshotGameTick"] = reader.IsDBNull(9) ? (object)null : reader.GetInt64(9)
-                        });
+                            items.Add(new JsonObject
+                            {
+                                ["id"] = reader.GetInt64(0),
+                                ["taskId"] = NullableString(reader, 1),
+                                ["commandId"] = NullableString(reader, 2),
+                                ["commandType"] = NullableString(reader, 3),
+                                ["status"] = reader.GetString(4),
+                                ["startedAt"] = NullableString(reader, 5),
+                                ["completedAt"] = NullableString(reader, 6),
+                                ["errorCode"] = NullableString(reader, 7),
+                                ["errorMessage"] = NullableString(reader, 8),
+                                ["snapshotGameTick"] = reader.IsDBNull(9) ? (object)null : reader.GetInt64(9)
+                            });
+                        }
                     }
                 }
             }
-
-            return new JsonObject
+            catch (Exception ex)
             {
-                ["items"] = items
-            };
+                available = false;
+                unavailableReason = ex.GetType().Name + ": " + ex.Message;
+                log.LogWarning($"AutomaticDSP history query failed: {unavailableReason}");
+            }
+
+            return HistoryResponse(items);
         }
 
         public void Dispose()
@@ -94,6 +118,16 @@ namespace AutomaticDSP.Storage
             var connection = new SQLiteConnection($"Data Source={databasePath};Version=3;");
             connection.Open();
             return connection;
+        }
+
+        private JsonObject HistoryResponse(List<object> items)
+        {
+            return new JsonObject
+            {
+                ["available"] = available,
+                ["unavailableReason"] = unavailableReason,
+                ["items"] = items
+            };
         }
 
         private static string NullableString(SQLiteDataReader reader, int ordinal)

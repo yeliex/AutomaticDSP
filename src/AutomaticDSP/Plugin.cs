@@ -31,7 +31,7 @@ namespace AutomaticDSP
         {
             LogSource = Logger;
             httpEnabled = Config.Bind("HTTP", "Enabled", true, "Enable local read-only HTTP API.");
-            httpHost = Config.Bind("HTTP", "Host", "127.0.0.1", "Local HTTP API bind host. Use 0.0.0.0 to listen on all interfaces.");
+            httpHost = Config.Bind("HTTP", "Host", "127.0.0.1", "Local HTTP API bind host. Use 0.0.0.0 to listen on all interfaces; Windows may require an HTTP URLACL for that.");
             httpPort = Config.Bind("HTTP", "Port", 39270, "Local HTTP API port.");
             snapshotIntervalTicks = Config.Bind("State", "SnapshotIntervalTicks", 60, "Game ticks between state snapshots.");
 
