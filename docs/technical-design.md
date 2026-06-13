@@ -396,8 +396,9 @@ query Queue {
 - `production`：当前行星生产、消耗和电力统计寄存器的非零项。
 - `power`：电网数量、蓄电量、发电/耗电/充放电统计。
 - `alerts`：由快照推导出的缺电、研究停滞等告警。
-- `buildContext`：建造决策上下文字段先保留结构，后续补齐可建造建筑和缺口。
-- `debug`：`sessionGate` 和稳定 `game` 摘要，仅用于早期字段映射调试；主循环中不反射扫描 `GameMain`、`GameData` 或 Unity 对象。
+- `buildContext`：当前建造作用域、背包关键建筑、手搓候选和材料缺口、基础铁块线需求、附近资源、附近基础设施、电力摘要。
+
+`debug` 不作为 `/state` 字段返回。早期字段映射调试信息写入 `BepInEx/cache/AutomaticDSP/diagnostics/gameMain.json`，内容限于 `sessionGate` 和稳定 `game` 摘要；主循环中不反射扫描 `GameMain`、`GameData` 或 Unity 对象。
 
 任务状态不放在 `/state` 快照里，第一阶段通过 `GET /tasks` 查询内存中的待执行和执行中命令，通过 `GET /history` 查询 SQLite 中的历史命令。
 

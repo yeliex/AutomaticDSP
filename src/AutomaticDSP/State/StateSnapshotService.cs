@@ -15,6 +15,18 @@ namespace AutomaticDSP.State
     {
         private const int NearbyBuildingLimit = 200;
         private const float NearbyBuildingRadius = 160f;
+        private const int NearbyBuildContextResourceLimit = 80;
+        private const float NearbyBuildContextRadius = 160f;
+        private static readonly int[] BuildContextBuildingItemIds =
+        {
+            2001, 2002, 2003,
+            2011, 2012, 2013,
+            2020,
+            2101, 2102, 2106,
+            2201, 2202, 2203, 2204, 2205, 2206, 2210, 2211,
+            2301, 2302, 2303, 2304, 2305, 2306, 2307, 2308, 2309, 2313, 2314,
+            2901
+        };
         private readonly ManualLogSource log;
         private readonly int snapshotIntervalTicks;
         private readonly JsonSerializerSettings jsonSettings = new JsonSerializerSettings
@@ -103,8 +115,7 @@ namespace AutomaticDSP.State
                 data["power"] = CapturePower();
                 data["alerts"] = CaptureAlerts(data);
                 data["buildContext"] = CaptureBuildContext(data);
-                var debug = CaptureGameMainDiagnostics();
-                data["debug"] = debug;
+                var diagnostics = CaptureGameMainDiagnostics();
 
                 stopwatch.Stop();
                 ((JsonObject)data["metadata"])["captureDurationMs"] = stopwatch.Elapsed.TotalMilliseconds;
@@ -116,7 +127,7 @@ namespace AutomaticDSP.State
                 inactiveLogged = false;
                 inactiveSnapshotFileChecked = false;
                 WriteLatestSnapshot(snapshot);
-                WriteGameMainDiagnostics(debug);
+                WriteGameMainDiagnostics(diagnostics);
 
                 if (snapshot.Id == 1 || snapshot.Id % 60 == 0)
                 {
@@ -183,7 +194,7 @@ namespace AutomaticDSP.State
             lastDiagnosticsWriteAt = now;
             try
             {
-                WriteJsonFile(diagnosticsDirectory, "gameMain.json", debug);
+                WriteJsonFile(diagnosticsDirectory, "gameMain.json", debug, Formatting.Indented);
             }
             catch (Exception ex)
             {
@@ -191,12 +202,12 @@ namespace AutomaticDSP.State
             }
         }
 
-        private void WriteJsonFile(string directory, string fileName, object payload)
+        private void WriteJsonFile(string directory, string fileName, object payload, Formatting formatting)
         {
             Directory.CreateDirectory(directory);
             var path = Path.Combine(directory, fileName);
             var tempPath = path + ".tmp";
-            var json = JsonConvert.SerializeObject(payload, Formatting.None, jsonSettings);
+            var json = JsonConvert.SerializeObject(payload, formatting, jsonSettings);
             File.WriteAllText(tempPath, json, Encoding.UTF8);
 
             if (File.Exists(path))
@@ -709,13 +720,319 @@ namespace AutomaticDSP.State
 
         private static JsonObject CaptureBuildContext(JsonObject data)
         {
+            var player = GameMain.mainPlayer;
+            var planet = GameMain.localPlanet;
+            var factory = planet?.factory;
+            var playerPosition = player != null ? player.position : Vector3.zero;
+            var inventoryCounts = CaptureInventoryCounts();
+
             return new JsonObject
             {
                 ["available"] = true,
-                ["notes"] = new List<object>
+                ["scope"] = new JsonObject
                 {
-                    "Build-context facts are reserved for M2. M1 exposes inventory, planet, factory, production, and power inputs."
+                    ["planetId"] = planet?.id,
+                    ["planetName"] = planet?.displayName,
+                    ["factoryAvailable"] = factory != null,
+                    ["playerOnPlanet"] = planet != null,
+                    ["buildRange"] = player?.mecha?.buildArea,
+                    ["nearbyRadius"] = NearbyBuildContextRadius
+                },
+                ["inventoryBuildings"] = CaptureBuildInventory(inventoryCounts),
+                ["craftableBuildings"] = CaptureCraftableBuildings(inventoryCounts),
+                ["basicProductionLine"] = CaptureBasicProductionLineNeeds(inventoryCounts),
+                ["nearbyResources"] = factory == null ? Unavailable("factory_missing") : CaptureNearbyResources(factory, playerPosition),
+                ["nearbyInfrastructure"] = factory == null ? Unavailable("factory_missing") : CaptureNearbyInfrastructure(factory, playerPosition),
+                ["power"] = CapturePowerContext(data)
+            };
+        }
+
+        private static Dictionary<int, int> CaptureInventoryCounts()
+        {
+            var result = new Dictionary<int, int>();
+            var package = GameMain.mainPlayer?.package;
+            if (package == null)
+            {
+                return result;
+            }
+
+            for (var i = 0; i < package.size; i++)
+            {
+                var grid = package.grids[i];
+                if (grid.itemId <= 0 || grid.count <= 0)
+                {
+                    continue;
                 }
+
+                result.TryGetValue(grid.itemId, out var count);
+                result[grid.itemId] = count + grid.count;
+            }
+
+            return result;
+        }
+
+        private static JsonObject CaptureBuildInventory(Dictionary<int, int> inventoryCounts)
+        {
+            var items = new List<object>();
+            var categoryCounts = new Dictionary<string, int>();
+
+            foreach (var itemId in BuildContextBuildingItemIds)
+            {
+                var proto = LDB.items.Select(itemId);
+                if (proto == null)
+                {
+                    continue;
+                }
+
+                var count = InventoryCount(inventoryCounts, itemId);
+                var category = BuildCategory(itemId);
+                if (count > 0)
+                {
+                    categoryCounts.TryGetValue(category, out var categoryCount);
+                    categoryCounts[category] = categoryCount + count;
+                }
+
+                items.Add(new JsonObject
+                {
+                    ["itemId"] = itemId,
+                    ["name"] = proto.name,
+                    ["category"] = category,
+                    ["count"] = count,
+                    ["stackSize"] = proto.StackSize,
+                    ["canBuild"] = proto.CanBuild
+                });
+            }
+
+            return new JsonObject
+            {
+                ["items"] = items,
+                ["categories"] = CategorySummary(categoryCounts)
+            };
+        }
+
+        private static JsonObject CaptureCraftableBuildings(Dictionary<int, int> inventoryCounts)
+        {
+            var items = new List<object>();
+            foreach (var itemId in BuildContextBuildingItemIds)
+            {
+                var proto = LDB.items.Select(itemId);
+                var recipe = proto?.handcraft;
+                if (proto == null || recipe == null)
+                {
+                    continue;
+                }
+
+                items.Add(new JsonObject
+                {
+                    ["itemId"] = itemId,
+                    ["name"] = proto.name,
+                    ["category"] = BuildCategory(itemId),
+                    ["handcraft"] = CaptureHandcraft(recipe, itemId, inventoryCounts)
+                });
+            }
+
+            return new JsonObject
+            {
+                ["items"] = items
+            };
+        }
+
+        private static JsonObject CaptureHandcraft(RecipeProto recipe, int resultItemId, Dictionary<int, int> inventoryCounts)
+        {
+            var missing = new List<object>();
+            var ingredients = new List<object>();
+            var canSatisfyMaterials = true;
+            var itemIds = recipe.Items ?? new int[0];
+            var itemCounts = recipe.ItemCounts ?? new int[0];
+
+            for (var i = 0; i < itemIds.Length && i < itemCounts.Length; i++)
+            {
+                var itemId = itemIds[i];
+                var required = itemCounts[i];
+                var available = InventoryCount(inventoryCounts, itemId);
+                var shortfall = Math.Max(0, required - available);
+                if (shortfall > 0)
+                {
+                    canSatisfyMaterials = false;
+                    missing.Add(new JsonObject
+                    {
+                        ["itemId"] = itemId,
+                        ["name"] = ItemName(itemId),
+                        ["count"] = shortfall
+                    });
+                }
+
+                ingredients.Add(new JsonObject
+                {
+                    ["itemId"] = itemId,
+                    ["name"] = ItemName(itemId),
+                    ["required"] = required,
+                    ["available"] = available,
+                    ["missing"] = shortfall
+                });
+            }
+
+            var unlocked = RecipeUnlocked(recipe.ID);
+            return new JsonObject
+            {
+                ["available"] = true,
+                ["recipeId"] = recipe.ID,
+                ["recipeName"] = recipe.name,
+                ["handcraft"] = recipe.Handcraft,
+                ["unlocked"] = unlocked,
+                ["craftableNow"] = recipe.Handcraft && unlocked && canSatisfyMaterials,
+                ["resultCount"] = RecipeResultCount(recipe, resultItemId),
+                ["timeSpend"] = recipe.TimeSpend,
+                ["ingredients"] = ingredients,
+                ["missingItems"] = missing
+            };
+        }
+
+        private static JsonObject CaptureBasicProductionLineNeeds(Dictionary<int, int> inventoryCounts)
+        {
+            var requirements = new List<object>();
+            var canStartFromInventory = true;
+            AddRequirement(requirements, ref canStartFromInventory, inventoryCounts, 2301, 1);
+            AddRequirement(requirements, ref canStartFromInventory, inventoryCounts, 2302, 1);
+            AddRequirement(requirements, ref canStartFromInventory, inventoryCounts, 2201, 2);
+            AddRequirement(requirements, ref canStartFromInventory, inventoryCounts, 2001, 12);
+            AddRequirement(requirements, ref canStartFromInventory, inventoryCounts, 2011, 3);
+
+            return new JsonObject
+            {
+                ["target"] = "iron_ingot_starter_line",
+                ["canStartFromInventory"] = canStartFromInventory,
+                ["requirements"] = requirements
+            };
+        }
+
+        private static void AddRequirement(List<object> requirements, ref bool canStartFromInventory, Dictionary<int, int> inventoryCounts, int itemId, int required)
+        {
+            var available = InventoryCount(inventoryCounts, itemId);
+            var missing = Math.Max(0, required - available);
+            if (missing > 0)
+            {
+                canStartFromInventory = false;
+            }
+
+            requirements.Add(new JsonObject
+            {
+                ["itemId"] = itemId,
+                ["name"] = ItemName(itemId),
+                ["required"] = required,
+                ["available"] = available,
+                ["missing"] = missing
+            });
+        }
+
+        private static JsonObject CaptureNearbyResources(PlanetFactory factory, Vector3 playerPosition)
+        {
+            var resources = new List<object>();
+            var byType = new Dictionary<int, int>();
+            var byTypeAmount = new Dictionary<int, long>();
+
+            for (var i = 1; i < factory.veinCursor; i++)
+            {
+                var vein = factory.veinPool[i];
+                if (vein.id != i)
+                {
+                    continue;
+                }
+
+                var distance = (vein.pos - playerPosition).magnitude;
+                if (distance > NearbyBuildContextRadius)
+                {
+                    continue;
+                }
+
+                var type = (int)vein.type;
+                byType.TryGetValue(type, out var count);
+                byType[type] = count + 1;
+                byTypeAmount.TryGetValue(type, out var amount);
+                byTypeAmount[type] = amount + vein.amount;
+
+                if (resources.Count < NearbyBuildContextResourceLimit)
+                {
+                    resources.Add(new JsonObject
+                    {
+                        ["id"] = vein.id,
+                        ["type"] = vein.type.ToString(),
+                        ["typeId"] = type,
+                        ["amount"] = vein.amount,
+                        ["distance"] = distance,
+                        ["position"] = Vector(vein.pos)
+                    });
+                }
+            }
+
+            return new JsonObject
+            {
+                ["available"] = true,
+                ["radius"] = NearbyBuildContextRadius,
+                ["resources"] = resources,
+                ["summary"] = ResourceSummary(byType, byTypeAmount)
+            };
+        }
+
+        private static JsonObject CaptureNearbyInfrastructure(PlanetFactory factory, Vector3 playerPosition)
+        {
+            var categoryCounts = new Dictionary<string, int>();
+            var entityCount = 0;
+            var missingPowerCount = 0;
+
+            for (var i = 1; i < factory.entityCursor; i++)
+            {
+                var entity = factory.entityPool[i];
+                if (entity.id != i)
+                {
+                    continue;
+                }
+
+                if ((entity.pos - playerPosition).sqrMagnitude > NearbyBuildContextRadius * NearbyBuildContextRadius)
+                {
+                    continue;
+                }
+
+                entityCount++;
+                var category = BuildCategory(entity.protoId);
+                categoryCounts.TryGetValue(category, out var count);
+                categoryCounts[category] = count + 1;
+
+                if (entity.powerNodeId == 0)
+                {
+                    missingPowerCount++;
+                }
+            }
+
+            return new JsonObject
+            {
+                ["available"] = true,
+                ["radius"] = NearbyBuildContextRadius,
+                ["entityCount"] = entityCount,
+                ["missingPowerBuildingCount"] = missingPowerCount,
+                ["categories"] = CategorySummary(categoryCounts)
+            };
+        }
+
+        private static JsonObject CapturePowerContext(JsonObject data)
+        {
+            var power = data["power"] as JsonObject;
+            if (power == null || !JsonBool(power, "available"))
+            {
+                return Unavailable("power_unavailable");
+            }
+
+            var generation = JsonLong(power, "generationRegister");
+            var consumption = JsonLong(power, "consumptionRegister");
+            return new JsonObject
+            {
+                ["available"] = true,
+                ["networkCount"] = JsonLong(power, "networkCount"),
+                ["storedEnergy"] = JsonLong(power, "storedEnergy"),
+                ["generationRegister"] = generation,
+                ["consumptionRegister"] = consumption,
+                ["satisfactionRatio"] = consumption <= 0 ? 1.0 : Math.Min(1.0, (double)generation / consumption),
+                ["hasShortage"] = consumption > generation
             };
         }
 
@@ -900,6 +1217,145 @@ namespace AutomaticDSP.State
             {
                 return false;
             }
+        }
+
+        private static int InventoryCount(Dictionary<int, int> inventoryCounts, int itemId)
+        {
+            inventoryCounts.TryGetValue(itemId, out var count);
+            return count;
+        }
+
+        private static bool RecipeUnlocked(int recipeId)
+        {
+            try
+            {
+                return recipeId > 0 && GameMain.history != null && GameMain.history.RecipeUnlocked(recipeId);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static int RecipeResultCount(RecipeProto recipe, int resultItemId)
+        {
+            var results = recipe.Results ?? new int[0];
+            var resultCounts = recipe.ResultCounts ?? new int[0];
+            for (var i = 0; i < results.Length && i < resultCounts.Length; i++)
+            {
+                if (results[i] == resultItemId)
+                {
+                    return resultCounts[i];
+                }
+            }
+
+            return 0;
+        }
+
+        private static string BuildCategory(int itemId)
+        {
+            if (itemId >= 2001 && itemId <= 2003)
+            {
+                return "belt";
+            }
+
+            if (itemId >= 2011 && itemId <= 2013)
+            {
+                return "sorter";
+            }
+
+            if (itemId == 2020)
+            {
+                return "splitter";
+            }
+
+            if (itemId == 2101 || itemId == 2102 || itemId == 2106)
+            {
+                return "storage";
+            }
+
+            if (itemId >= 2201 && itemId <= 2211)
+            {
+                return "power";
+            }
+
+            if (itemId == 2301)
+            {
+                return "miner";
+            }
+
+            if (itemId == 2302)
+            {
+                return "smelter";
+            }
+
+            if (itemId >= 2303 && itemId <= 2305)
+            {
+                return "assembler";
+            }
+
+            if (itemId == 2306 || itemId == 2307)
+            {
+                return "resource_collector";
+            }
+
+            if (itemId == 2308 || itemId == 2309 || itemId == 2314)
+            {
+                return "fluid_production";
+            }
+
+            if (itemId == 2313)
+            {
+                return "spray_coater";
+            }
+
+            if (itemId == 2901)
+            {
+                return "lab";
+            }
+
+            return "other";
+        }
+
+        private static List<object> CategorySummary(Dictionary<string, int> categoryCounts)
+        {
+            var result = new List<object>();
+            foreach (var pair in categoryCounts)
+            {
+                result.Add(new JsonObject
+                {
+                    ["category"] = pair.Key,
+                    ["count"] = pair.Value
+                });
+            }
+
+            return result;
+        }
+
+        private static List<object> ResourceSummary(Dictionary<int, int> byType, Dictionary<int, long> byTypeAmount)
+        {
+            var result = new List<object>();
+            foreach (var pair in byType)
+            {
+                result.Add(new JsonObject
+                {
+                    ["typeId"] = pair.Key,
+                    ["count"] = pair.Value,
+                    ["amount"] = byTypeAmount[pair.Key]
+                });
+            }
+
+            return result;
+        }
+
+        private static bool JsonBool(JsonObject data, string key)
+        {
+            return data.ContainsKey(key) && Convert.ToBoolean(data[key]);
+        }
+
+        private static long JsonLong(JsonObject data, string key)
+        {
+            return data.ContainsKey(key) && data[key] != null ? Convert.ToInt64(data[key]) : 0;
         }
 
         private static JsonObject ItemSummary(Dictionary<int, int> items)

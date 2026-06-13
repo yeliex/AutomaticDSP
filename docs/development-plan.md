@@ -201,16 +201,17 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 
 ### buildContext
 
-- 当前可建造建筑摘要。
-- 背包已有建筑数量。
-- 可通过手搓获得的建筑。
-- 玩家附近已有电网。
-- 玩家附近资源点。
-- 基础生产线所需物品缺口摘要。
+- 当前建造作用域：行星、工厂可用性、玩家是否在行星上、建造范围、附近扫描半径。
+- 背包内关键建筑数量，按传送带、分拣器、电力、矿机、熔炉、制造台、仓储等分类。
+- 可手搓建筑候选：配方 ID、是否解锁、材料是否足够、缺口材料。
+- 基础铁块生产线所需物品缺口摘要。
+- 玩家附近资源点和资源类型摘要。
+- 玩家附近已有基础设施和缺电建筑数量。
+- 当前电网数量、蓄电量、发电/耗电寄存器和供电满足率。
 
-### debug
+### diagnostics
 
-`debug` 用于早期字段映射，不作为 Agent 长期依赖的稳定查询契约。
+诊断数据不放进 `/state`，避免和稳定状态重复。需要调试时读取 `BepInEx/cache/AutomaticDSP/diagnostics/gameMain.json`。
 
 - `sessionGate` 当前判定结果。
 - `game` 稳定对局摘要。
@@ -308,7 +309,7 @@ AutomaticDSP 保持独立 BepInEx Mod，不依赖 Nebula。Nebula 只作为设�
 
 - 进入游戏后日志显示快照定时生成。
 - `GET /health` 返回最近快照 tick。
-- `GET /state` 至少返回 metadata、game、player、inventory、replicator、research、currentPlanet、factory、production、power、alerts。
+- `GET /state` 至少返回 metadata、game、player、inventory、replicator、research、currentPlanet、factory、production、power、alerts、buildContext。
 - 不进入游戏时接口返回明确状态，而不是异常。
 - 停留在主菜单或菜单演示时不会保留旧的 `latest.json` 或 `gameMain.json`。
 
