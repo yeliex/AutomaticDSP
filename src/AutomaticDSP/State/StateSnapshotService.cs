@@ -837,11 +837,6 @@ namespace AutomaticDSP.State
                     return "game_data_missing";
                 }
 
-                if (!GameMain.notNull)
-                {
-                    return "game_main_null";
-                }
-
                 if (GameMain.isLoading)
                 {
                     return "game_loading";
