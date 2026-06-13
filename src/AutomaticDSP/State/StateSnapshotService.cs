@@ -16,6 +16,7 @@ namespace AutomaticDSP.State
         private const int DefaultQueryListLimit = 256;
         private const int MaxQueryListLimit = 2048;
         private const int MaxQueryDepth = 16;
+        private const int OneLevelMemberLimit = 128;
         private const int SpaceObjectSampleLimit = 128;
         private static readonly string[] SnapshotFileNames =
         {
@@ -303,6 +304,11 @@ namespace AutomaticDSP.State
                 return SerializeQueryLeaf(value, field);
             }
 
+            if (value is JsonObject)
+            {
+                return ResolveQueryObject(value, field.Children, depth + 1);
+            }
+
             if (value is IEnumerable enumerable && !(value is string))
             {
                 return ResolveQueryEnumerable(enumerable, field, depth);
@@ -401,7 +407,7 @@ namespace AutomaticDSP.State
 
             if (value is JsonObject jsonObject)
             {
-                return new JsonObject();
+                return SerializeOneLevelJsonObject(jsonObject);
             }
 
             if (value is IEnumerable enumerable && !(value is string))
@@ -424,10 +430,120 @@ namespace AutomaticDSP.State
 
                     result.Add(item == null
                         ? null
-                        : IsQueryScalar(item) ? SerializeQueryLeaf(item, field) : new JsonObject());
+                        : IsQueryScalar(item) ? SerializeQueryLeaf(item, field) : SerializeOneLevelObject(item));
                 }
 
                 return result;
+            }
+
+            return SerializeOneLevelObject(value);
+        }
+
+        private static JsonObject SerializeOneLevelJsonObject(JsonObject source)
+        {
+            var result = new JsonObject();
+            var count = 0;
+            foreach (var pair in source)
+            {
+                if (count++ >= OneLevelMemberLimit)
+                {
+                    break;
+                }
+
+                result[pair.Key] = SerializeOneLevelMemberValue(pair.Value);
+            }
+
+            return result;
+        }
+
+        private static JsonObject SerializeOneLevelObject(object source)
+        {
+            if (source == null || source is UnityEngine.Object)
+            {
+                return new JsonObject();
+            }
+
+            var result = new JsonObject();
+            var type = source.GetType();
+            var flags = BindingFlags.Instance | BindingFlags.Public;
+
+            foreach (var field in type.GetFields(flags))
+            {
+                if (result.Count >= OneLevelMemberLimit)
+                {
+                    return result;
+                }
+
+                try
+                {
+                    result[field.Name] = SerializeOneLevelMemberValue(field.GetValue(source));
+                }
+                catch
+                {
+                    result[field.Name] = null;
+                }
+            }
+
+            foreach (var property in type.GetProperties(flags))
+            {
+                if (result.Count >= OneLevelMemberLimit)
+                {
+                    break;
+                }
+
+                if (result.ContainsKey(property.Name) || property.GetIndexParameters().Length != 0)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    result[property.Name] = SerializeOneLevelMemberValue(property.GetValue(source, null));
+                }
+                catch
+                {
+                    result[property.Name] = null;
+                }
+            }
+
+            return result;
+        }
+
+        private static object SerializeOneLevelMemberValue(object value)
+        {
+            if (value == null)
+            {
+                return null;
+            }
+
+            if (IsQueryScalar(value))
+            {
+                return value;
+            }
+
+            if (value is Enum)
+            {
+                return value.ToString();
+            }
+
+            var vector = VectorOrNull(value);
+            if (vector != null)
+            {
+                return vector;
+            }
+
+            var quaternion = QuaternionOrNull(value);
+            if (quaternion != null)
+            {
+                return quaternion;
+            }
+
+            if (value is IEnumerable && !(value is string))
+            {
+                return new JsonObject
+                {
+                    ["count"] = CountOf(value)
+                };
             }
 
             return new JsonObject();
