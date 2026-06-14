@@ -274,12 +274,13 @@ namespace AutomaticDSP.GameControl
         public JsonObject SkipPrologue()
         {
             var status = GameStatus();
-            if (status != "prologue")
+            if (!CanSkipPrologue(status))
             {
                 return new JsonObject
                 {
                     ["skipped"] = false,
-                    ["status"] = status
+                    ["status"] = status,
+                    ["reason"] = status == "prologue" ? "prologue_skip_not_ready" : "not_in_prologue"
                 };
             }
 
@@ -369,7 +370,7 @@ namespace AutomaticDSP.GameControl
                 ["canCreateNewGame"] = status == "menu",
                 ["canLoadSave"] = status == "menu",
                 ["canSave"] = status == "running" || status == "paused" || status == "prologue",
-                ["canSkipPrologue"] = status == "prologue"
+                ["canSkipPrologue"] = CanSkipPrologue(status)
             };
         }
 
@@ -673,6 +674,16 @@ namespace AutomaticDSP.GameControl
             }
 
             return "unknown";
+        }
+
+        private static bool CanSkipPrologue(string status)
+        {
+            if (status != "prologue" || GameMain.data == null || GameMain.mainPlayer == null)
+            {
+                return false;
+            }
+
+            return !SafeBool(() => GameMain.mainPlayer.sailing);
         }
 
         private static bool IsPreloadReady()

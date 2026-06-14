@@ -4,6 +4,7 @@ using System.Data.SQLite;
 using System.IO;
 using AutomaticDSP.Serialization;
 using BepInEx.Logging;
+using Newtonsoft.Json;
 
 namespace AutomaticDSP.Storage
 {
@@ -40,7 +41,8 @@ namespace AutomaticDSP.Storage
                             completed_at TEXT NULL,
                             error_code TEXT NULL,
                             error_message TEXT NULL,
-                            game_tick INTEGER NULL
+                            game_tick INTEGER NULL,
+                            result_json TEXT NULL
                         );";
                     command.ExecuteNonQuery();
                     EnsureHistorySchema(connection);
@@ -73,7 +75,7 @@ namespace AutomaticDSP.Storage
                 {
                     command.CommandText =
                         @"SELECT id, task_id, command_id, command_type, status, started_at, completed_at,
-                                 error_code, error_message, game_tick
+                                 error_code, error_message, game_tick, result_json
                           FROM command_history
                           ORDER BY id DESC
                           LIMIT $limit;";
@@ -94,7 +96,8 @@ namespace AutomaticDSP.Storage
                                 ["completedAt"] = NullableString(reader, 6),
                                 ["errorCode"] = NullableString(reader, 7),
                                 ["errorMessage"] = NullableString(reader, 8),
-                                ["gameTick"] = reader.IsDBNull(9) ? (object)null : reader.GetInt64(9)
+                                ["gameTick"] = reader.IsDBNull(9) ? (object)null : reader.GetInt64(9),
+                                ["result"] = NullableJson(reader, 10)
                             });
                         }
                     }
@@ -110,9 +113,62 @@ namespace AutomaticDSP.Storage
             return HistoryResponse(items);
         }
 
+        public void InsertCommandHistory(
+            string taskId,
+            string commandId,
+            string commandType,
+            string status,
+            DateTimeOffset? startedAt,
+            DateTimeOffset? completedAt,
+            string errorCode,
+            string errorMessage,
+            object result,
+            long? gameTick)
+        {
+            if (!available)
+            {
+                return;
+            }
+
+            try
+            {
+                using (var connection = OpenConnection())
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText =
+                        @"INSERT INTO command_history (
+                              task_id, command_id, command_type, status, started_at, completed_at,
+                              error_code, error_message, game_tick, result_json
+                          )
+                          VALUES (
+                              $task_id, $command_id, $command_type, $status, $started_at, $completed_at,
+                              $error_code, $error_message, $game_tick, $result_json
+                          );";
+                    command.Parameters.AddWithValue("$task_id", (object)taskId ?? DBNull.Value);
+                    command.Parameters.AddWithValue("$command_id", (object)commandId ?? DBNull.Value);
+                    command.Parameters.AddWithValue("$command_type", (object)commandType ?? DBNull.Value);
+                    command.Parameters.AddWithValue("$status", status);
+                    command.Parameters.AddWithValue("$started_at", startedAt.HasValue ? (object)startedAt.Value.ToString("o") : DBNull.Value);
+                    command.Parameters.AddWithValue("$completed_at", completedAt.HasValue ? (object)completedAt.Value.ToString("o") : DBNull.Value);
+                    command.Parameters.AddWithValue("$error_code", (object)errorCode ?? DBNull.Value);
+                    command.Parameters.AddWithValue("$error_message", (object)errorMessage ?? DBNull.Value);
+                    command.Parameters.AddWithValue("$game_tick", gameTick.HasValue ? (object)gameTick.Value : DBNull.Value);
+                    command.Parameters.AddWithValue("$result_json", result == null ? (object)DBNull.Value : JsonConvert.SerializeObject(result));
+                    command.ExecuteNonQuery();
+                }
+            }
+            catch (Exception ex)
+            {
+                available = false;
+                unavailableReason = ex.GetType().Name + ": " + ex.Message;
+                log.LogWarning($"AutomaticDSP history insert failed: {unavailableReason}");
+            }
+        }
+
         private static void EnsureHistorySchema(SQLiteConnection connection)
         {
             var hasGameTick = false;
+            var hasResultJson = false;
             var hasLegacySnapshotGameTick = false;
             using (var command = connection.CreateCommand())
             {
@@ -125,6 +181,10 @@ namespace AutomaticDSP.Storage
                         if (name == "game_tick")
                         {
                             hasGameTick = true;
+                        }
+                        else if (name == "result_json")
+                        {
+                            hasResultJson = true;
                         }
                         else if (name == "snapshot_game_tick")
                         {
@@ -148,6 +208,15 @@ namespace AutomaticDSP.Storage
                 using (var command = connection.CreateCommand())
                 {
                     command.CommandText = "UPDATE command_history SET game_tick = snapshot_game_tick WHERE game_tick IS NULL;";
+                    command.ExecuteNonQuery();
+                }
+            }
+
+            if (!hasResultJson)
+            {
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText = "ALTER TABLE command_history ADD COLUMN result_json TEXT NULL;";
                     command.ExecuteNonQuery();
                 }
             }
@@ -177,6 +246,17 @@ namespace AutomaticDSP.Storage
         private static string NullableString(SQLiteDataReader reader, int ordinal)
         {
             return reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);
+        }
+
+        private static object NullableJson(SQLiteDataReader reader, int ordinal)
+        {
+            if (reader.IsDBNull(ordinal))
+            {
+                return null;
+            }
+
+            var value = reader.GetString(ordinal);
+            return string.IsNullOrWhiteSpace(value) ? null : JsonConvert.DeserializeObject(value);
         }
     }
 }

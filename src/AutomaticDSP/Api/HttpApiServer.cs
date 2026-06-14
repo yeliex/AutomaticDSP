@@ -25,7 +25,7 @@ namespace AutomaticDSP.Api
         private readonly ManualLogSource log;
         private readonly int port;
         private readonly GameStateQueryService stateQueryService;
-        private readonly TaskStateStore taskStateStore;
+        private readonly TaskQueueService taskQueueService;
         private CancellationTokenSource cancellation;
         private HttpListener listener;
         private Task listenTask;
@@ -40,7 +40,7 @@ namespace AutomaticDSP.Api
             int port,
             GameStateQueryService stateQueryService,
             GameControlService gameControlService,
-            TaskStateStore taskStateStore,
+            TaskQueueService taskQueueService,
             HistoryStore historyStore,
             ManualLogSource log)
         {
@@ -48,7 +48,7 @@ namespace AutomaticDSP.Api
             this.port = port;
             this.stateQueryService = stateQueryService;
             this.gameControlService = gameControlService;
-            this.taskStateStore = taskStateStore;
+            this.taskQueueService = taskQueueService;
             this.historyStore = historyStore;
             this.log = log;
         }
@@ -182,13 +182,38 @@ namespace AutomaticDSP.Api
                 }
                 else if (path == "/tasks")
                 {
-                    if (!IsGet(context))
+                    if (IsGet(context))
                     {
-                        WriteJson(context, 405, Error("method_not_allowed", "Only GET is supported for /tasks."));
+                        WriteJson(context, 200, taskQueueService.GetActiveTasksResponse());
+                    }
+                    else if (string.Equals(context.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
+                    {
+                        HandleSubmitTask(context);
+                    }
+                    else
+                    {
+                        WriteJson(context, 405, Error("method_not_allowed", "Only GET and POST are supported for /tasks."));
+                    }
+                }
+                else if (IsTaskCancelPath(path, out var taskId))
+                {
+                    if (!string.Equals(context.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
+                    {
+                        WriteJson(context, 405, Error("method_not_allowed", "Only POST is supported for /tasks/{id}/cancel."));
                         return;
                     }
 
-                    WriteJson(context, 200, taskStateStore.GetActiveTasksResponse());
+                    HandleCancelTask(context, taskId);
+                }
+                else if (IsTaskPath(path, out taskId))
+                {
+                    if (!IsGet(context))
+                    {
+                        WriteJson(context, 405, Error("method_not_allowed", "Only GET is supported for /tasks/{id}."));
+                        return;
+                    }
+
+                    HandleGetTask(context, taskId);
                 }
                 else if (path == "/history")
                 {
@@ -375,6 +400,53 @@ namespace AutomaticDSP.Api
             }
         }
 
+        private void HandleSubmitTask(HttpListenerContext context)
+        {
+            TaskSubmitRequest request;
+            try
+            {
+                request = ReadJsonRequest<TaskSubmitRequest>(context, allowEmpty: false);
+            }
+            catch (JsonException ex)
+            {
+                WriteJson(context, 400, Error("bad_json", ex.Message));
+                return;
+            }
+
+            try
+            {
+                WriteJson(context, 200, taskQueueService.Enqueue(request));
+            }
+            catch (TaskQueueException ex)
+            {
+                WriteJson(context, TaskQueueStatusCode(ex.Code), Error(ex.Code, ex.Message));
+            }
+        }
+
+        private void HandleCancelTask(HttpListenerContext context, string taskId)
+        {
+            try
+            {
+                WriteJson(context, 200, taskQueueService.Cancel(taskId));
+            }
+            catch (TaskQueueException ex)
+            {
+                WriteJson(context, TaskQueueStatusCode(ex.Code), Error(ex.Code, ex.Message));
+            }
+        }
+
+        private void HandleGetTask(HttpListenerContext context, string taskId)
+        {
+            try
+            {
+                WriteJson(context, 200, taskQueueService.GetTaskResponse(taskId));
+            }
+            catch (TaskQueueException ex)
+            {
+                WriteJson(context, TaskQueueStatusCode(ex.Code), Error(ex.Code, ex.Message));
+            }
+        }
+
         private static StateQueryRequest ReadStateQueryRequest(HttpListenerContext context)
         {
             return ReadJsonRequest<StateQueryRequest>(context, allowEmpty: false);
@@ -448,6 +520,22 @@ namespace AutomaticDSP.Api
             }
         }
 
+        private static int TaskQueueStatusCode(string code)
+        {
+            switch (code)
+            {
+                case "bad_request":
+                case "invalid_command":
+                    return 400;
+                case "task_not_found":
+                    return 404;
+                case "invalid_task_status":
+                    return 409;
+                default:
+                    return 400;
+            }
+        }
+
         private static bool IsGet(HttpListenerContext context)
         {
             return string.Equals(context.Request.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase);
@@ -456,6 +544,40 @@ namespace AutomaticDSP.Api
         private static bool IsOptions(HttpListenerContext context)
         {
             return string.Equals(context.Request.HttpMethod, "OPTIONS", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsTaskCancelPath(string path, out string taskId)
+        {
+            taskId = null;
+            const string prefix = "/tasks/";
+            const string suffix = "/cancel";
+            if (!path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ||
+                !path.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            taskId = Uri.UnescapeDataString(path.Substring(prefix.Length, path.Length - prefix.Length - suffix.Length));
+            return !string.IsNullOrWhiteSpace(taskId);
+        }
+
+        private static bool IsTaskPath(string path, out string taskId)
+        {
+            taskId = null;
+            const string prefix = "/tasks/";
+            if (!path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var rawTaskId = path.Substring(prefix.Length);
+            if (string.IsNullOrWhiteSpace(rawTaskId) || rawTaskId.IndexOf('/') >= 0)
+            {
+                return false;
+            }
+
+            taskId = Uri.UnescapeDataString(rawTaskId);
+            return !string.IsNullOrWhiteSpace(taskId);
         }
 
         private static string DisplayHost(string value)

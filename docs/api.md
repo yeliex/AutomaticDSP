@@ -1,6 +1,6 @@
 # AutomaticDSP API 文档
 
-本文描述当前 M1 已实现的 HTTP API。默认监听地址：
+本文描述 AutomaticDSP HTTP API。当前实现包含 `/game`、`/game/state`、存档控制、任务队列接口和 `GET /history` 查询。默认监听地址：
 
 ```text
 http://127.0.0.1:39270
@@ -39,8 +39,8 @@ Content-Type: application/json; charset=utf-8
 - `400`：请求体或 GraphQL 查询语法错误。
 - `404`：路径匹配失败。
 - `405`：HTTP 方法匹配失败。
-- `409`：游戏处于对局就绪前状态。
-- `504`：等待下一次游戏查询 tick 超时。
+- `409`：游戏处于对局就绪前状态，或任务状态不允许当前操作。
+- `504`：等待下一次游戏查询 tick 或控制 tick 超时。
 
 ## GET /game
 
@@ -113,6 +113,8 @@ Content-Type: application/json; charset=utf-8
   "starCount": 64
 }
 ```
+
+`ready = true` 表示可以调用 `POST /game/state`。当前包括 `status = running`、`paused` 和 `prologue`；`prologue` 下用于让 AI Agent 感知并回收开局太空舱等序幕对象。
 
 `status` 当前取值：
 
@@ -259,6 +261,165 @@ Content-Type: application/json; charset=utf-8
 
 查询语法见 [查询语法文档](query-syntax.md)。
 
+### 原型与科技查询
+
+`POST /game/state` 可查询 `techs`、`recipes` 和 `items` 原型摘要，用于让 Agent 根据游戏数据选择科技、配方和建造物，而不是硬编码 ID。
+
+```graphql
+query FindBasicBuildTechs {
+  research {
+    currentTechId
+    currentTechName
+    queueLength
+    queue { techId name }
+  }
+  techs(where: { unlockRecipes_contains: 84 }, limit: 8) {
+    id
+    name
+    unlocked
+    canEnqueue
+    hashUploaded
+    hashNeeded
+    preTechs
+    preItems
+    items { itemId itemName points }
+    metadataBuyoutCost { itemId itemName required available }
+    unlockRecipes
+    addItems { itemId itemName count }
+  }
+  items(where: { id_in: [2001, 2011, 2203, 2301, 2302] }, limit: 8) {
+    id
+    name
+    unlocked
+    canBuild
+    handcraftRecipeId
+  }
+}
+```
+
+`techs.unlockRecipes` 是科技解锁的配方 ID 列表。例如传送带配方是 `84`、分拣器是 `85`、采矿机是 `48`、电弧熔炉是 `56`、风力涡轮机是 `7`。Agent 可以先查询这些配方对应的科技，再用 `researchTech` 推进。
+
+### 太空舱与特殊地面物感知
+
+查询接口尽量暴露与游戏对象对齐的对象。出生点太空舱不是矿脉，而是 `PlanetFactory.vegePool` 中的特殊 `VegeData`，其 `protoId` 为 `9999`。AI Agent 不应等待一个独立的 `spaceCapsule` 状态对象，而应在常规状态查询中附带一次地面特殊物检查；无论新游戏是否跳过序幕，都应先查询并优先回收飞行仓。
+
+```graphql
+query ObserveStartObjects {
+  metadata { gameTick localPlanetId }
+  player {
+    position { x y z }
+  }
+  factory {
+    vegePool(where: { id_gt: 0 protoId: 9999 }, limit: 1) {
+      id
+      protoId
+      pos { x y z }
+      scl { x y z }
+    }
+  }
+  warningSystem {
+    activeWarnings {
+      signalId
+      objectId
+      localPosition { x y z }
+    }
+    activeBroadcasts {
+      vocal
+      context
+      astroId
+      localPosition { x y z }
+    }
+  }
+}
+```
+
+`warningSystem.activeBroadcasts` 可能出现 `SpaceCapsuleLanding` 等屏幕/语音提示，但太空舱回收的可靠数据源仍是 `factory.vegePool`。如果查询到 `protoId = 9999` 的对象，应把返回的 `id` 作为 `mineTarget.targetId`，并使用 `targetType = "vege"` 优先采集；回收后再执行补充机甲燃料、采矿、手搓和研究等开局目标。如果没有查到，说明当前对局可能已经回收，或该对象不在当前行星工厂数据中。
+
+`veinPool`、`vegePool` 等带有本地坐标的对象可请求派生字段 `distanceToPlayer`。手动采集或开局回收应优先选择距离最近的目标；自动化产线选址再综合矿脉规模、地形和附近资源。
+
+### 工厂实体摘要查询
+
+`factory` / `localFactory` 仍然返回当前行星的游戏原始 `PlanetFactory` 对象，适合查询 `entityPool`、`veinPool`、`vegePool` 等与游戏结构对齐的数据。Agent 需要快速判断已建实体、配方、缺电、缺料和输出堵塞时，可以查询 `factoryDetails` / `localFactoryDetails`：
+
+```graphql
+query ObserveFactoryEntities {
+  factoryDetails {
+    planetId
+    planetName
+    entityCount
+    buildingSummary { itemId itemName count }
+    statusSummary { status count }
+    items {
+      entityId
+      protoId
+      name
+      position { x y z }
+      powerNodeId
+      assemblerId
+      minerId
+      inserterId
+      component {
+        type
+        recipeId
+        recipeName
+        productId
+        productName
+        veinCount
+        productCount
+      }
+      status
+    }
+  }
+}
+```
+
+这个摘要根不替代原始 `factory` 查询；它只是把常用实体组件状态整理成 Agent 易消费的结构。建造、配方设置或拆除后，应重新查询 `factoryDetails.items` 来确认实体是否建成、配方是否写入，以及是否出现 `materialShortage`、`outputBlocked` 或 `noRecipe` 等状态。供电状态应由外部 Agent 查询 `factory.powerSystem.consumerPool`、`nodePool` 和 `networkId` 等游戏原始字段判断。
+
+### 背包与燃烧室聚合查询
+
+`inventory` / `package` 和 `mecha.reactorStorage` 默认对齐游戏原始存储对象。需要槽位细节时查询 `grids`；需要快速判断物品总量时，可以查询派生字段 `items` 或 `summary`：
+
+```graphql
+query ObserveStorage {
+  inventory {
+    items {
+      itemId
+      name
+      count
+      inc
+      slots
+    }
+    summary {
+      totalItemCount
+      distinctItemCount
+    }
+    grids(where: { itemId_gt: 0 }, limit: 80) {
+      itemId
+      count
+      inc
+      filter
+      stackSize
+    }
+  }
+  mecha {
+    reactorStorage {
+      items {
+        itemId
+        name
+        count
+      }
+      grids(where: { itemId_gt: 0 }, limit: 12) {
+        itemId
+        count
+        inc
+      }
+    }
+  }
+}
+```
+
+`items` 按 `itemId` 聚合所有非空槽位，返回物品名、总数量、增产剂总量和占用槽位数；`summary` 返回总物品数和不同物品种类数。开局回收飞行仓后，Agent 应重新查询这些字段，再决定是否补燃料、继续采集或手搓。
+
 ## GET /game/saves
 
 获取存档列表和基本信息。该接口会读取游戏存档目录下的 `.dsv` 文件，并尽量解析 header、`GameDesc` 和元数据属性。
@@ -353,21 +514,454 @@ Content-Type: application/json; charset=utf-8
 }
 ```
 
-## GET /tasks
+## POST /tasks
 
-查询当前进程内待执行或执行中的任务。M1 当前返回空列表。
+提交一个任务到唯一顺序任务队列。任务内 `commands` 按数组顺序执行，当前命令未完成前不会开始下一条命令。任务接口不使用 GraphQL 写操作。
+
+当前实现为进程内唯一顺序队列；任务状态随游戏主循环推进。
+
+请求体：
 
 ```json
 {
-  "tasks": []
+  "clientRequestId": "build-iron-line-001",
+  "stopOnFailure": true,
+  "commands": [
+    {
+      "id": "move-to-ore",
+      "type": "moveTo",
+      "planetId": "current",
+      "position": { "x": 120.5, "y": 35.0, "z": -80.2 },
+      "tolerance": 5,
+      "timeoutSeconds": 60
+    },
+    {
+      "id": "place-miner",
+      "type": "placeBuilding",
+      "itemId": 2301,
+      "position": { "x": 123.0, "y": 35.0, "z": -78.5 },
+      "rotation": 90,
+      "timeoutSeconds": 120
+    },
+    {
+      "id": "set-iron-recipe",
+      "type": "setRecipe",
+      "target": { "commandId": "place-smelter" },
+      "recipeId": 1
+    }
+  ]
 }
 ```
 
-任务提交、取消和命令状态通过独立任务接口处理。
+成功响应：
+
+```json
+{
+  "task": {
+    "id": "task:42",
+    "clientRequestId": "build-iron-line-001",
+    "status": "QUEUED",
+    "queueIndex": 0,
+    "currentCommandIndex": 0,
+    "stopOnFailure": true,
+    "commands": [
+      {
+        "id": "move-to-ore",
+        "type": "moveTo",
+        "status": "PENDING",
+        "phase": null,
+        "startedAt": null,
+        "completedAt": null,
+        "errorCode": null,
+        "errorMessage": null,
+        "result": null
+      }
+    ]
+  }
+}
+```
+
+任务状态：
+
+- `QUEUED`
+- `RUNNING`
+- `SUCCEEDED`
+- `FAILED`
+- `CANCEL_REQUESTED`
+- `CANCELLED`
+
+命令状态：
+
+- `PENDING`
+- `RUNNING`
+- `SUCCEEDED`
+- `FAILED`
+- `SKIPPED`
+- `CANCELLED`
+
+第一版命令类型：
+
+- `moveTo`
+- `mineTarget`
+- `autoReplenishMechaFuel`
+- `entityFastFillIn`
+- `entityFastTakeOut`
+- `dismantleEntity`
+- `craftInventory`
+- `researchTech`
+- `buyoutTech`
+- `removeTechInQueue`
+- `placeBuilding`
+- `placeBelt`
+- `placeSorter`
+- `setRecipe`
+- `setLabResearchMode`
+- `waitUntil`
+
+建造命令默认等待游戏内建造完成后才算成功。采集、填充、拆除和建造类命令没有移动策略参数：目标在内部允许的命令下发半径内时，命令可以自动靠近并再次调用游戏原生校验；目标超过下发半径时返回 `out_of_range`，外部 Agent 必须先用 `moveTo` 靠近，再重新下发交互或建造命令。
+
+自动靠近不扩大游戏规则允许的交互、碰撞、地形、物品数量或科技限制；最终仍以游戏原生采集订单、`BuildTool.CheckBuildConditions()`、`PlanetFactory.EntityFastFillIn()` 和拆除逻辑为准。
+
+太空舱不提供专用任务命令。它是当前行星 `factory.vegePool` 中 `protoId = 9999` 的 `VegeData`，Agent 应先通过状态查询获取它的 `id`，再用普通 `mineTarget` 发出游戏原生采集订单。开局阶段应始终优先回收飞行仓，因为它会提供燃料和基础材料；在飞行仓存在时，不应先执行采矿、手搓、研究或建造目标。
+
+```json
+{
+  "id": "recycle-capsule",
+  "type": "mineTarget",
+  "targetType": "vege",
+  "targetId": 123,
+  "untilDepleted": true,
+  "timeoutSeconds": 120
+}
+```
+
+如果任务执行时该 `VegeData` 已不存在，`mineTarget` 会返回 `target_not_found`。这通常表示太空舱已经回收，或当前玩家不在包含该对象的行星工厂中。成功结果包含 `depleted` 和本次采集进入背包的 `items`。
+
+普通矿脉或地面资源采集可以传入期望获得的物品数量。`itemCount` 是明确字段，`count` 是兼容别名；两者都没有传入时默认采集 1 个目标物品。采集命令仍然使用游戏原生采集订单，达到目标数量或目标枯竭后结束：
+
+```json
+{
+  "id": "mine-iron-ore",
+  "type": "mineTarget",
+  "targetType": "vein",
+  "targetId": 4,
+  "itemId": 1001,
+  "count": 50,
+  "timeoutSeconds": 240
+}
+```
+
+`autoReplenishMechaFuel` 用于把背包中的可用燃料补充到机甲燃烧室。它调用游戏原生 `Mecha.AutoReplenishFuelAll()`，因此哪些物品可以放入燃烧室由游戏内部逻辑决定，外部 Agent 不需要传入燃料配方或燃料类型。
+
+```json
+{
+  "id": "fill-mecha-reactor",
+  "type": "autoReplenishMechaFuel",
+  "timeoutSeconds": 10
+}
+```
+
+命令成功结果包含 `method`、`movedCount`、`movedItems`、`reactorItems`、`reactorEnergyBefore` 和 `reactorEnergyAfter`。如果没有任何燃料移动，且机甲燃烧室仍为空，命令返回 `FAILED`，`errorCode` 为 `no_fuel_moved`。
+
+机甲燃烧室与建筑发电机燃料槽不是同一套数据结构：机甲使用 `Mecha.reactorStorage` / `reactorEnergy`，建筑发电机使用 `PowerGeneratorComponent.fuelId` / `fuelCount` / `fuelMask`。本命令只处理机甲燃烧室，不用于给火力发电机、热电站等建筑填燃料。
+
+`entityFastFillIn` 对齐游戏原生 `PlanetFactory.EntityFastFillIn(entityId, fromPackage, out itemBundle)`。它用于对当前行星实体执行游戏内“快速填充”，包括但不限于建筑发电机燃料槽、制造设施输入、弹药等；具体能填入什么由游戏原生方法和实体当前状态决定。
+
+```json
+{
+  "id": "fast-fill-generator",
+  "type": "entityFastFillIn",
+  "target": { "commandId": "place-generator" },
+  "fromPackage": true,
+  "timeoutSeconds": 30
+}
+```
+
+目标实体支持 `entityId`、`target.entityId` 或 `target.commandId`。`target.commandId` 可以引用同一任务中之前成功命令返回的 `entityId`；如果引用 `placeBelt` 等返回 `entityIds` 的命令，可同时传 `target.entityIndex` 选择某个实体。默认 `fromPackage = true`，即从背包快速填充；目标超过命令下发半径时返回 `out_of_range`。成功结果包含 `method`、`entityId`、`movedItems` 和实体摘要；如果没有任何物品被原生方法转移，返回 `FAILED`，`errorCode` 为 `no_item_transferred`。
+
+`entityFastTakeOut` 对齐游戏原生 `PlanetFactory.EntityFastTakeOut(entityId, toPackage, out itemBundle, out full)`。它用于对当前行星实体执行游戏内“快速取出”，包括储物仓、传送带、采矿机、分拣器、制造设施和研究站等实体中原生允许取出的物品；具体能取出什么由游戏原生方法和实体当前状态决定。
+
+```json
+{
+  "id": "take-from-iron-storage",
+  "type": "entityFastTakeOut",
+  "entityId": 19,
+  "toPackage": true,
+  "timeoutSeconds": 30
+}
+```
+
+目标实体支持 `entityId`、`target.entityId` 或 `target.commandId`，引用规则与 `entityFastFillIn` 相同。默认 `toPackage = true`，即取到背包；目标超过命令下发半径时返回 `out_of_range`。成功结果包含 `method`、`entityId`、`full`、`movedItems` 和实体摘要；如果没有任何物品被原生方法转移，返回 `FAILED`，`errorCode` 为 `no_item_transferred`。
+
+`dismantleEntity` 用于拆除当前行星实体，并通过游戏原生 `PlayerAction_Build.DoDismantleObject(entityId)` 回收建筑物品和实体内部物品。它支持 `entityId`、`target.entityId` 或 `target.commandId`；如果引用 `placeBelt` 等返回 `entityIds` 的命令，可同时传 `target.entityIndex` 选择某个实体。命令只处理已经建成的正实体 ID，不处理预建 ID：
+
+```json
+{
+  "id": "remove-bad-smelter",
+  "type": "dismantleEntity",
+  "entityId": 17,
+  "timeoutSeconds": 60
+}
+```
+
+```json
+{
+  "id": "remove-first-belt",
+  "type": "dismantleEntity",
+  "target": { "commandId": "belt-from-miner", "entityIndex": 0 },
+  "timeoutSeconds": 60
+}
+```
+
+成功结果包含 `entityId`、`protoId`、`protoName`、`position`、`returnedItems` 和 `returnedCount`。如果实体不存在返回 `target_not_found`；目标超出命令下发半径时返回 `out_of_range`。
+
+`craftInventory` 推荐由外部传入目标物品，而不是配方：
+
+```json
+{
+  "id": "craft-iron-ingot",
+  "type": "craftInventory",
+  "itemId": 1101,
+  "count": 10,
+  "timeoutSeconds": 120
+}
+```
+
+`itemId` 表示期望获得的物品，`count` 表示期望产物数量。Mod 会使用游戏内部 `ItemProto.handcraft` 解析手搓配方，并通过 `MechaForge.TryAddTask/AddTask` 走游戏原生递归材料判定和入队逻辑。需要兼容旧调用或强制指定配方时可以传 `recipeId`；如果只传 `recipeId`，`count` 表示配方执行次数。
+
+材料不足时命令返回 `FAILED`，`errorCode` 为 `missing_item`，`result` 会包含 `ingredients`、`products` 和递归汇总后的 `missing` 列表。配方未解锁时返回 `recipe_locked`。成功时命令会等待背包中目标产物数量达到本次制造目标后再返回 `SUCCEEDED`。
+
+`researchTech` 用于按当前存档的正常流程推进科技。它只对齐游戏原生 `GameHistoryData.EnqueueTech()`：可入队时加入科技队列，并按 `waitForUnlock` 决定是否等待游戏内机甲实验室或研究站上传 hash 后解锁。它不会调用 `BuyoutTech()`，也不会使用跨存档结转的 `PropertySystem` 元数据。
+
+```json
+{
+  "id": "research-basic-logistics",
+  "type": "researchTech",
+  "techId": 1001,
+  "waitForUnlock": true,
+  "timeoutSeconds": 120
+}
+```
+
+成功结果包含 `techId`、`techName`、`usesMetadata`、`unlocked`、`inQueue`、`currentTechId`、`queueLength`、`hashUploaded`、`hashNeeded`、正常研究物品摘要和 `metadataBuyoutCost`。`usesMetadata` 对 `researchTech` 固定为 `false`。
+
+`buyoutTech` 用于显式使用游戏原生 `GameHistoryData.BuyoutTech()`，消耗的是跨存档结转的 `PropertySystem` 元数据，而不是当前背包物品。它只应该用于测试加速或玩家明确希望跳过当前局研究进度的场景；正常 Agent 游玩流程应使用 `researchTech`。
+
+```json
+{
+  "id": "buyout-basic-logistics",
+  "type": "buyoutTech",
+  "techId": 1601,
+  "timeoutSeconds": 10
+}
+```
+
+`buyoutTech` 成功结果中 `usesMetadata = true`，`metadataBuyoutCost` 会返回本次科技按当前 hash 进度估算的元数据物品需求和 `PropertySystem.GetItemAvaliableProperty()` 可用量。买断失败返回 `tech_buyout_failed`。
+
+`removeTechInQueue` 用于对齐游戏原生 `GameHistoryData.RemoveTechInQueue(index)`，移除研究队列中的指定索引，并由游戏原生 `VerifyTechQueue()` 重新整理队列。它不负责决定科技路线；外部 Agent 应先查询 `research` / `techs`，移除不合适的队列项后，再用 `researchTech` 按游戏原生入队规则补满队列。
+
+```json
+{
+  "id": "remove-late-tech",
+  "type": "removeTechInQueue",
+  "index": 7
+}
+```
+
+成功结果包含 `action`、`currentTechId`、`queueLength` 和整理后的 `techQueue`。
+
+`setLabResearchMode` 用于把矩阵研究站切换到游戏原生研究模式。它支持 `entityId`、`target.entityId` 或 `target.commandId`；默认使用当前研究队列的 `GameHistoryData.currentTech`，也可以显式传入 `techId`。目标必须是矩阵研究站实体，命令会调用 `LabComponent.SetFunction(_researchMode: true, 0, techId, entitySignPool)`，并同步相邻研究站函数：
+
+```json
+{
+  "id": "set-lab-research",
+  "type": "setLabResearchMode",
+  "entityId": 23,
+  "techId": 1101
+}
+```
+
+生产矩阵仍然使用 `setRecipe` 设置研究站的矩阵配方；`setLabResearchMode` 只用于研究模式。
+
+`placeBelt` 支持两种路径输入。`points` 可包含两个或多个行星局部坐标点；实现会按相邻点调用游戏网格吸附并生成传送带预览。
+
+```json
+{
+  "id": "belt-iron-ore",
+  "type": "placeBelt",
+  "itemId": 2001,
+  "points": [
+    { "x": 120.0, "y": 35.0, "z": -80.0 },
+    { "x": 126.0, "y": 35.0, "z": -78.0 }
+  ],
+  "timeoutSeconds": 120
+}
+```
+
+也可以使用 `startPosition` 和 `endPosition`：
+
+```json
+{
+  "type": "placeBelt",
+  "itemId": 2001,
+  "startPosition": { "x": 120.0, "y": 35.0, "z": -80.0 },
+  "endPosition": { "x": 126.0, "y": 35.0, "z": -78.0 }
+}
+```
+
+也可以使用端点对象连接建筑端口。端点对象支持 `entityId`、`commandId`、`entityIndex`、`slot` 和可选 `position`；`commandId` 引用同一任务内之前成功命令的结果，`entityIndex` 用于选择 `entityIds` 中的某个实体。
+
+```json
+{
+  "id": "belt-from-miner",
+  "type": "placeBelt",
+  "itemId": 2001,
+  "start": { "commandId": "place-miner", "slot": 0 },
+  "end": { "x": 126.0, "y": 35.0, "z": -78.0 },
+  "timeoutSeconds": 120
+}
+```
+
+`placeSorter` 使用输入/输出实体建立连接。`input` 与 `output` 可直接传实体 ID，也可传对象；对象支持 `entityId`、`commandId`、`entityIndex`、`slot` 和可选 `position`。连接到传送带时可传入 belt 实体 ID；如果引用 `placeBelt` 的结果，用 `entityIndex` 选择要连接的传送带段。
+
+```json
+{
+  "id": "sorter-smelter-in",
+  "type": "placeSorter",
+  "itemId": 2011,
+  "input": { "commandId": "belt-from-miner", "entityIndex": 3 },
+  "output": { "commandId": "place-smelter", "slot": 0 },
+  "timeoutSeconds": 120
+}
+```
+
+`placeBelt` 成功结果包含 `entityIds`；只有单个实体的命令会额外返回 `entityId`。`setRecipe` 可通过 `target.commandId` 引用同一任务内之前成功命令返回的 `entityId`。
+
+`waitUntil` 支持以下第一版条件：
+
+- `always` / `never`：测试用条件。
+- `elapsedSeconds`：等待指定秒数，字段为 `seconds`。
+- `elapsedTicks`：等待指定游戏 tick 数，字段为 `ticks`。
+- `gameTickAtLeast`：等待游戏 tick 达到指定值，字段为 `gameTick`。
+- `inventoryAtLeast`：背包中指定物品数量达到 `count`。
+- `inventoryDeltaAtLeast`：从该命令开始等待后，背包中指定物品增加至少 `count`。
+- `techUnlocked`：指定 `techId` 的科技已解锁。
+- `recipeUnlocked`：指定 `recipeId` 的配方已解锁。
+- `itemUnlocked`：指定 `itemId` 的物品已解锁。
+- `factoryProductDeltaAtLeast` / `itemProduced` / `nearbyItemProduced`：从该命令开始等待后，当前行星工厂统计中指定物品产出增加至少 `count`。
+- `factoryConsumeDeltaAtLeast` / `itemConsumed`：从该命令开始等待后，当前行星工厂统计中指定物品消耗增加至少 `count`。
+
+```json
+{
+  "id": "wait-iron-output",
+  "type": "waitUntil",
+  "condition": { "type": "factoryProductDeltaAtLeast", "itemId": 1101, "count": 1 },
+  "timeoutSeconds": 120
+}
+```
+
+`nearbyItemProduced` 当前第一版按当前行星工厂产出统计判断，不做半径内空间归因；需要空间归因时应先通过 `/game/state` 查询局部实体状态。
+
+完整行星内铁块生产线任务示例见 `docs/examples/planetary-iron-line.md`。
+
+## POST /tasks/{id}/cancel
+
+请求取消任务。
+
+```http
+POST /tasks/task:42/cancel
+```
+
+成功响应：
+
+```json
+{
+  "task": {
+    "id": "task:42",
+    "status": "CANCEL_REQUESTED"
+  }
+}
+```
+
+取消语义：
+
+- `QUEUED` 任务可以直接转为 `CANCELLED`。
+- `RUNNING` 任务在当前命令完成或到达安全中断点后停止。
+- 取消或超时时，移动、采集和自动靠近类建造命令会清理伊卡洛斯当前玩家订单。
+- 已经创建的游戏预建不回滚，取消只停止后续命令。
+
+## GET /tasks
+
+查询当前进程内待执行或执行中的任务。已完成、失败或取消的任务不再通过该接口返回；命令历史通过 `GET /history` 查询。
+
+```json
+{
+  "tasks": [
+    {
+      "id": "task:42",
+      "clientRequestId": "build-iron-line-001",
+      "status": "RUNNING",
+      "queueIndex": 0,
+      "currentCommandIndex": 1,
+      "stopOnFailure": true,
+      "commands": [
+        {
+          "id": "place-miner",
+          "type": "placeBuilding",
+          "status": "RUNNING",
+          "phase": "waitingBuilt",
+          "startedAt": "2026-06-13T12:00:00Z",
+          "completedAt": null,
+          "errorCode": null,
+          "errorMessage": null,
+          "result": null
+        }
+      ]
+    }
+  ]
+}
+```
+
+任务队列严格顺序执行，不并行、不重排、不提前执行后续命令。
+
+## GET /tasks/{id}
+
+查询当前进程内保留的单个任务完整快照，包括已结束任务的命令 `result`。这个接口用于在任务完成后继续读取 `entityId`、`entityIds`、错误信息和命令阶段；跨进程或长期历史仍使用 `GET /history`。
+
+```http
+GET /tasks/task:42
+```
+
+成功响应结构与 `POST /tasks` 的 `task` 字段一致。任务不存在时返回 `404 task_not_found`。
+
+任务错误响应示例：
+
+```json
+{
+  "error": {
+    "code": "invalid_command",
+    "message": "Command 2 is missing required field: itemId."
+  }
+}
+```
+
+常见任务错误码：
+
+- `invalid_command`
+- `game_not_ready`
+- `missing_item`
+- `tech_locked`
+- `recipe_locked`
+- `terrain_blocked`
+- `collision`
+- `out_of_range`
+- `path_unreachable`
+- `timeout`
+- `command_cancelled`
 
 ## GET /history
 
-查询 SQLite 中已经完成、失败或取消的历史命令。当前实现固定返回最近 100 条。
+查询 SQLite 中已经完成、失败、跳过或取消的历史命令。当前实现固定返回最近 100 条。
 
 ```json
 {
@@ -384,7 +978,11 @@ Content-Type: application/json; charset=utf-8
       "completedAt": "2026-06-13T12:00:01",
       "errorCode": null,
       "errorMessage": null,
-      "gameTick": 123456
+      "gameTick": 123456,
+      "result": {
+        "entityId": 12,
+        "itemId": 2301
+      }
     }
   ]
 }

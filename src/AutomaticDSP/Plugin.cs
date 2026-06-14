@@ -7,6 +7,7 @@ using AutomaticDSP.GameControl;
 using AutomaticDSP.State;
 using AutomaticDSP.Storage;
 using AutomaticDSP.Tasks;
+using AutomaticDSP.UI;
 
 namespace AutomaticDSP
 {
@@ -27,7 +28,8 @@ namespace AutomaticDSP
         private HttpApiServer httpServer;
         private GameControlService gameControlService;
         private GameStateQueryService stateQueryService;
-        private TaskStateStore taskStateStore;
+        private TaskQueueService taskQueueService;
+        private TaskStatusOverlay taskStatusOverlay;
 
         private void Awake()
         {
@@ -41,15 +43,16 @@ namespace AutomaticDSP
             historyStore = new HistoryStore(cacheRoot, Logger);
             historyStore.Initialize();
 
-            taskStateStore = new TaskStateStore();
+            taskQueueService = new TaskQueueService(historyStore, Logger);
             gameControlService = new GameControlService(Logger);
             stateQueryService = new GameStateQueryService(queryIntervalTicks.Value, Logger);
+            taskStatusOverlay = new TaskStatusOverlay(taskQueueService, Logger);
 
             if (httpEnabled.Value)
             {
                 try
                 {
-                    httpServer = new HttpApiServer(httpHost.Value, httpPort.Value, stateQueryService, gameControlService, taskStateStore, historyStore, Logger);
+                    httpServer = new HttpApiServer(httpHost.Value, httpPort.Value, stateQueryService, gameControlService, taskQueueService, historyStore, Logger);
                     httpServer.Start();
                 }
                 catch (System.Exception ex)
@@ -67,10 +70,13 @@ namespace AutomaticDSP
         {
             stateQueryService?.Update();
             gameControlService?.Update();
+            taskQueueService?.Update();
+            taskStatusOverlay?.Update();
         }
 
         private void OnDestroy()
         {
+            taskStatusOverlay?.Dispose();
             httpServer?.Dispose();
             historyStore?.Dispose();
         }

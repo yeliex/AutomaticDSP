@@ -87,7 +87,17 @@ namespace AutomaticDSP.State
                 return;
             }
 
-            if (gameTick == lastQueryDispatchGameTick || gameTick % queryIntervalTicks != 0)
+            if (gameTick == lastQueryDispatchGameTick)
+            {
+                if (IsPrologueStatus() && HasPendingStateQueries())
+                {
+                    ExecutePendingStateQueries(gameTick);
+                }
+
+                return;
+            }
+
+            if (gameTick % queryIntervalTicks != 0)
             {
                 return;
             }
@@ -102,6 +112,11 @@ namespace AutomaticDSP.State
             {
                 return pendingStateQueries.Count > 0;
             }
+        }
+
+        private bool IsPrologueStatus()
+        {
+            return string.Equals(JsonString(latestGameStatus, "status", "unknown"), "prologue", StringComparison.OrdinalIgnoreCase);
         }
 
         private void ExecutePendingStateQueries(long gameTick)
@@ -223,12 +238,27 @@ namespace AutomaticDSP.State
                 case "factory":
                 case "localFactory":
                     return GameMain.localPlanet?.factory;
+                case "factoryDetails":
+                case "localFactoryDetails":
+                    return CaptureLocalPlanetFactories();
                 case "factories":
                     return GameMain.data?.factories;
                 case "production":
                     return GameMain.statistics?.production;
                 case "power":
                     return GameMain.localPlanet?.factory?.powerSystem;
+                case "research":
+                case "technology":
+                    return CaptureResearch();
+                case "techs":
+                    return CaptureTechPrototypes();
+                case "recipes":
+                    return CaptureRecipePrototypes();
+                case "items":
+                    return CaptureItemPrototypes();
+                case "warningSystem":
+                case "warnings":
+                    return CaptureWarningSystem();
             }
 
             return GetGameMainStaticMember(name) ??
@@ -270,9 +300,18 @@ namespace AutomaticDSP.State
                     QueryRoot("localStar", "object", "Current local star, if any."),
                     QueryRoot("factory", "object", "Current local planet factory, if loaded."),
                     QueryRoot("localFactory", "object", "Alias of factory."),
+                    QueryRoot("factoryDetails", "object", "Agent-friendly summary of current local planet factory entities."),
+                    QueryRoot("localFactoryDetails", "object", "Alias of factoryDetails."),
                     QueryRoot("factories", "list", "GameData factories array."),
                     QueryRoot("production", "object", "Production statistics."),
-                    QueryRoot("power", "object", "Current local planet power system.")
+                    QueryRoot("power", "object", "Current local planet power system."),
+                    QueryRoot("research", "object", "Current technology research state."),
+                    QueryRoot("technology", "object", "Alias of research."),
+                    QueryRoot("techs", "list", "Technology prototype summaries."),
+                    QueryRoot("recipes", "list", "Recipe prototype summaries."),
+                    QueryRoot("items", "list", "Item prototype summaries."),
+                    QueryRoot("warningSystem", "object", "Current game warning and broadcast summary."),
+                    QueryRoot("warnings", "object", "Alias of warningSystem.")
                 }
             };
         }
@@ -432,6 +471,12 @@ namespace AutomaticDSP.State
                 return quaternion;
             }
 
+            var pose = PoseOrNull(value);
+            if (pose != null)
+            {
+                return pose;
+            }
+
             if (IsRuntimeValue(value))
             {
                 return null;
@@ -583,6 +628,12 @@ namespace AutomaticDSP.State
             if (quaternion != null)
             {
                 return quaternion;
+            }
+
+            var pose = PoseOrNull(value);
+            if (pose != null)
+            {
+                return pose;
             }
 
             if (IsRuntimeValue(value))
@@ -856,6 +907,19 @@ namespace AutomaticDSP.State
 
         private static bool TextContains(object actual, object expected)
         {
+            if (actual is IEnumerable enumerable && !(actual is string))
+            {
+                foreach (var item in enumerable)
+                {
+                    if (ValuesEqual(item, expected))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
             var actualText = FilterText(actual);
             var expectedText = FilterText(expected);
             return actualText != null &&
@@ -956,6 +1020,11 @@ namespace AutomaticDSP.State
                 return false;
             }
 
+            if (TryGetDerivedQueryableMemberValue(target, name, out value))
+            {
+                return true;
+            }
+
             var type = target.GetType();
             const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
             var field = type.GetField(name, flags);
@@ -1014,6 +1083,115 @@ namespace AutomaticDSP.State
 
             value = null;
             return false;
+        }
+
+        private static bool TryGetDerivedQueryableMemberValue(object target, string name, out object value)
+        {
+            value = null;
+            if (string.Equals(name, "items", StringComparison.OrdinalIgnoreCase) &&
+                TryGetStorageSummary(target, out var items, out _))
+            {
+                value = items;
+                return true;
+            }
+
+            if (string.Equals(name, "summary", StringComparison.OrdinalIgnoreCase) &&
+                TryGetStorageSummary(target, out _, out var summary))
+            {
+                value = summary;
+                return true;
+            }
+
+            if (!string.Equals(name, "distanceToPlayer", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var player = GameMain.mainPlayer;
+            if (player == null)
+            {
+                return false;
+            }
+
+            var position = MemberValue(target, "pos", "localPos", "localPosition", "position");
+            switch (position)
+            {
+                case Vector3 localPosition:
+                    value = Vector3.Distance(player.position, localPosition);
+                    return true;
+                case VectorLF3 universalPosition:
+                    var dx = player.uPosition.x - universalPosition.x;
+                    var dy = player.uPosition.y - universalPosition.y;
+                    var dz = player.uPosition.z - universalPosition.z;
+                    value = Math.Sqrt(dx * dx + dy * dy + dz * dz);
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private static bool TryGetStorageSummary(object target, out List<object> items, out JsonObject summary)
+        {
+            items = null;
+            summary = null;
+            var grids = MemberValue(target, "grids") as Array;
+            if (grids == null)
+            {
+                return false;
+            }
+
+            var byItem = new Dictionary<int, int>();
+            var byItemInc = new Dictionary<int, int>();
+            var byItemSlots = new Dictionary<int, int>();
+            for (var i = 0; i < grids.Length; i++)
+            {
+                var grid = grids.GetValue(i);
+                var itemId = MemberInt(grid, 0, "itemId");
+                var count = MemberInt(grid, 0, "count");
+                if (itemId <= 0 || count <= 0)
+                {
+                    continue;
+                }
+
+                byItem.TryGetValue(itemId, out var existingCount);
+                byItem[itemId] = existingCount + count;
+                byItemInc.TryGetValue(itemId, out var existingInc);
+                byItemInc[itemId] = existingInc + MemberInt(grid, 0, "inc");
+                byItemSlots.TryGetValue(itemId, out var existingSlots);
+                byItemSlots[itemId] = existingSlots + 1;
+            }
+
+            items = InventorySummaryItems(byItem, byItemInc, byItemSlots);
+            summary = new JsonObject
+            {
+                ["items"] = items,
+                ["totalItemCount"] = TotalItemCount(byItem),
+                ["distinctItemCount"] = byItem.Count
+            };
+            return true;
+        }
+
+        private static List<object> InventorySummaryItems(
+            Dictionary<int, int> items,
+            Dictionary<int, int> incs,
+            Dictionary<int, int> slots)
+        {
+            var result = new List<object>();
+            foreach (var pair in items)
+            {
+                incs.TryGetValue(pair.Key, out var inc);
+                slots.TryGetValue(pair.Key, out var slotCount);
+                result.Add(new JsonObject
+                {
+                    ["itemId"] = pair.Key,
+                    ["name"] = ItemName(pair.Key),
+                    ["count"] = pair.Value,
+                    ["inc"] = inc,
+                    ["slots"] = slotCount
+                });
+            }
+
+            return result;
         }
 
         private static bool IsQueryableMember(string name, Type type)
@@ -1190,7 +1368,7 @@ namespace AutomaticDSP.State
         private static JsonObject CaptureGameStatus()
         {
             var status = GetGameStatusValue();
-            var ready = status == "running" || status == "paused";
+            var ready = status == "running" || status == "paused" || status == "prologue";
             var result = new JsonObject
             {
                 ["ready"] = ready,
@@ -1286,6 +1464,18 @@ namespace AutomaticDSP.State
             catch
             {
                 return false;
+            }
+        }
+
+        private static long SafeLong(Func<long> read, long defaultValue)
+        {
+            try
+            {
+                return read();
+            }
+            catch
+            {
+                return defaultValue;
             }
         }
 
@@ -1758,6 +1948,7 @@ namespace AutomaticDSP.State
                 ["warningCapacity"] = MemberInt(warnings, warningPool?.Length ?? 0, "warningCapacity"),
                 ["warningRecycleCursor"] = MemberInt(warnings, 0, "warningRecycleCursor"),
                 ["activeWarnings"] = WarningSummaries(warningPool, 64),
+                ["activeBroadcasts"] = BroadcastSummaries(MemberValue(warnings, "broadcasts"), 64),
                 ["criticalWarningCount"] = CountOf(MemberValue(warnings, "criticalWarnings")),
                 ["broadcastCount"] = CountOf(MemberValue(warnings, "broadcasts")),
                 ["broadcastConfigCount"] = CountOf(MemberValue(warnings, "broadcastConfigs")),
@@ -2255,6 +2446,287 @@ namespace AutomaticDSP.State
                 {
                     ["techId"] = techId,
                     ["name"] = TechName(techId)
+                });
+            }
+
+            return result;
+        }
+
+        private static List<object> CaptureTechPrototypes()
+        {
+            var result = new List<object>();
+            var values = ReflectionReader.Get(LDB.techs, "dataArray") as IEnumerable;
+            if (values == null)
+            {
+                return result;
+            }
+
+            foreach (var value in values)
+            {
+                if (!(value is TechProto tech) || tech.ID <= 0)
+                {
+                    continue;
+                }
+
+                var history = GameMain.history;
+                object techState = null;
+                if (history != null)
+                {
+                    techState = history.TechState(tech.ID);
+                }
+
+                result.Add(new JsonObject
+                {
+                    ["id"] = tech.ID,
+                    ["name"] = tech.name,
+                    ["isHidden"] = tech.IsHiddenTech,
+                    ["isLabTech"] = tech.IsLabTech,
+                    ["unlocked"] = history != null && history.TechUnlocked(tech.ID),
+                    ["inQueue"] = history != null && history.TechInQueue(tech.ID),
+                    ["canEnqueue"] = history != null && history.CanEnqueueTech(tech.ID),
+                    ["preTechs"] = IntArray(tech.PreTechs, 64, false),
+                    ["preItems"] = IntArray(tech.PreItem, 64, false),
+                    ["items"] = TechPrototypeItems(tech),
+                    ["unlockRecipes"] = IntArray(tech.UnlockRecipes, 128, false),
+                    ["unlockFunctions"] = IntArray(tech.UnlockFunctions, 128, false),
+                    ["addItems"] = TechPrototypeAddItems(tech),
+                    ["hashUploaded"] = ReflectionReader.GetLong(techState, 0, "hashUploaded"),
+                    ["hashNeeded"] = ReflectionReader.GetLong(techState, SafeLong(() => tech.GetHashNeeded(0), 0), "hashNeeded"),
+                    ["metadataBuyoutCost"] = TechMetadataBuyoutCosts(tech, techState)
+                });
+            }
+
+            return result;
+        }
+
+        private static List<object> CaptureRecipePrototypes()
+        {
+            var result = new List<object>();
+            var values = ReflectionReader.Get(LDB.recipes, "dataArray") as IEnumerable;
+            if (values == null)
+            {
+                return result;
+            }
+
+            foreach (var value in values)
+            {
+                if (!(value is RecipeProto recipe) || recipe.ID <= 0)
+                {
+                    continue;
+                }
+
+                result.Add(new JsonObject
+                {
+                    ["id"] = recipe.ID,
+                    ["name"] = recipe.name,
+                    ["type"] = recipe.Type.ToString(),
+                    ["handcraft"] = recipe.Handcraft,
+                    ["explicit"] = recipe.Explicit,
+                    ["unlocked"] = GameMain.history != null && GameMain.history.RecipeUnlocked(recipe.ID),
+                    ["items"] = RecipeItems(recipe.Items, recipe.ItemCounts),
+                    ["results"] = RecipeItems(recipe.Results, recipe.ResultCounts)
+                });
+            }
+
+            return result;
+        }
+
+        private static List<object> CaptureItemPrototypes()
+        {
+            var result = new List<object>();
+            var values = ReflectionReader.Get(LDB.items, "dataArray") as IEnumerable;
+            if (values == null)
+            {
+                return result;
+            }
+
+            foreach (var value in values)
+            {
+                if (!(value is ItemProto item) || item.ID <= 0)
+                {
+                    continue;
+                }
+
+                var desc = item.prefabDesc;
+                result.Add(new JsonObject
+                {
+                    ["id"] = item.ID,
+                    ["name"] = item.name,
+                    ["type"] = item.Type.ToString(),
+                    ["stackSize"] = item.StackSize,
+                    ["isEntity"] = item.IsEntity,
+                    ["canBuild"] = item.CanBuild,
+                    ["unlocked"] = GameMain.history != null && GameMain.history.ItemUnlocked(item.ID),
+                    ["handcraftRecipeId"] = item.handcraft?.ID ?? 0,
+                    ["handcraftProductCount"] = item.handcraftProductCount,
+                    ["isBelt"] = desc != null && desc.isBelt,
+                    ["isInserter"] = desc != null && desc.isInserter,
+                    ["isAssembler"] = desc != null && desc.isAssembler,
+                    ["isPowerGen"] = desc != null && desc.isPowerGen
+                });
+            }
+
+            return result;
+        }
+
+        private static List<object> TechPrototypeItems(TechProto tech)
+        {
+            var result = new List<object>();
+            if (tech?.Items == null || tech.ItemPoints == null)
+            {
+                return result;
+            }
+
+            var itemCount = Math.Min(tech.Items.Length, tech.ItemPoints.Length);
+            for (var i = 0; i < itemCount; i++)
+            {
+                var itemId = tech.Items[i];
+                if (itemId <= 0)
+                {
+                    continue;
+                }
+
+                result.Add(new JsonObject
+                {
+                    ["itemId"] = itemId,
+                    ["itemName"] = ItemName(itemId),
+                    ["points"] = tech.ItemPoints[i]
+                });
+            }
+
+            return result;
+        }
+
+        private static List<object> TechMetadataBuyoutCosts(TechProto tech, object techState)
+        {
+            var result = new List<object>();
+            if (tech == null)
+            {
+                return result;
+            }
+
+            var hashUploaded = ReflectionReader.GetLong(techState, 0, "hashUploaded");
+            var hashNeeded = ReflectionReader.GetLong(techState, SafeLong(() => tech.GetHashNeeded(0), 0), "hashNeeded");
+            var progress = hashNeeded <= 0 ? 1.0 : Math.Max(0.0, Math.Min(1.0, (double)hashUploaded / hashNeeded));
+            if (tech.PropertyOverrideItemArray != null)
+            {
+                foreach (var entry in tech.PropertyOverrideItemArray)
+                {
+                    var itemId = ReflectionReader.GetInt(entry, 0, "id");
+                    var overrideCount = ReflectionReader.GetInt(entry, 0, "count");
+                    var required = (int)Math.Ceiling(overrideCount * (1.0 - progress));
+                    AddTechMetadataBuyoutCost(result, itemId, required);
+                }
+
+                return result;
+            }
+
+            if (tech.Items == null || tech.ItemPoints == null)
+            {
+                return result;
+            }
+
+            var count = Math.Min(tech.Items.Length, tech.ItemPoints.Length);
+            for (var i = 0; i < count; i++)
+            {
+                var itemId = tech.Items[i];
+                if (itemId <= 0)
+                {
+                    continue;
+                }
+
+                var remainingHash = Math.Max(0, hashNeeded - hashUploaded);
+                AddTechMetadataBuyoutCost(result, itemId, tech.ItemPoints[i] * remainingHash / 3600);
+            }
+
+            return result;
+        }
+
+        private static void AddTechMetadataBuyoutCost(List<object> result, int itemId, long required)
+        {
+            if (itemId <= 0)
+            {
+                return;
+            }
+
+            result.Add(new JsonObject
+            {
+                ["itemId"] = itemId,
+                ["itemName"] = ItemName(itemId),
+                ["required"] = required,
+                ["available"] = MetadataAvailableProperty(itemId)
+            });
+        }
+
+        private static long MetadataAvailableProperty(int itemId)
+        {
+            try
+            {
+                var propertySystem = DSPGame.propertySystem;
+                var data = GameMain.data;
+                if (propertySystem == null || data == null)
+                {
+                    return 0;
+                }
+
+                return propertySystem.GetItemAvaliableProperty(data.GetClusterSeedKey(), itemId);
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        private static List<object> TechPrototypeAddItems(TechProto tech)
+        {
+            var result = new List<object>();
+            if (tech?.AddItems == null || tech.AddItemCounts == null)
+            {
+                return result;
+            }
+
+            var count = Math.Min(tech.AddItems.Length, tech.AddItemCounts.Length);
+            for (var i = 0; i < count; i++)
+            {
+                var itemId = tech.AddItems[i];
+                if (itemId <= 0)
+                {
+                    continue;
+                }
+
+                result.Add(new JsonObject
+                {
+                    ["itemId"] = itemId,
+                    ["itemName"] = ItemName(itemId),
+                    ["count"] = tech.AddItemCounts[i]
+                });
+            }
+
+            return result;
+        }
+
+        private static List<object> RecipeItems(int[] itemIds, int[] counts)
+        {
+            var result = new List<object>();
+            if (itemIds == null || counts == null)
+            {
+                return result;
+            }
+
+            var count = Math.Min(itemIds.Length, counts.Length);
+            for (var i = 0; i < count; i++)
+            {
+                var itemId = itemIds[i];
+                if (itemId <= 0 || counts[i] <= 0)
+                {
+                    continue;
+                }
+
+                result.Add(new JsonObject
+                {
+                    ["itemId"] = itemId,
+                    ["itemName"] = ItemName(itemId),
+                    ["count"] = counts[i]
                 });
             }
 
@@ -2976,10 +3448,54 @@ namespace AutomaticDSP.State
                     ["index"] = i,
                     ["id"] = id,
                     ["type"] = MemberValue(warning, "type", "warningType")?.ToString(),
+                    ["signalId"] = MemberInt(warning, 0, "signalId"),
+                    ["detailId1"] = MemberInt(warning, 0, "detailId1"),
+                    ["detailId2"] = MemberInt(warning, 0, "detailId2"),
                     ["astroId"] = MemberInt(warning, 0, "astroId"),
                     ["factoryId"] = MemberInt(warning, 0, "factoryId"),
-                    ["entityId"] = MemberInt(warning, 0, "entityId"),
-                    ["itemId"] = MemberInt(warning, 0, "itemId")
+                    ["objectId"] = MemberInt(warning, 0, "objectId", "entityId"),
+                    ["entityId"] = MemberInt(warning, 0, "entityId", "objectId"),
+                    ["itemId"] = MemberInt(warning, 0, "itemId"),
+                    ["localPosition"] = VectorOrNull(MemberValue(warning, "localPos", "localPosition"))
+                });
+            }
+
+            return result;
+        }
+
+        private static List<object> BroadcastSummaries(object broadcasts, int limit)
+        {
+            var result = new List<object>();
+            if (!(broadcasts is IEnumerable enumerable))
+            {
+                return result;
+            }
+
+            foreach (var entry in enumerable)
+            {
+                if (result.Count >= limit)
+                {
+                    break;
+                }
+
+                var broadcast = MemberValue(entry, "Value", "value") ?? entry;
+                if (MemberValue(broadcast, "isNull") is bool isNull && isNull)
+                {
+                    continue;
+                }
+
+                result.Add(new JsonObject
+                {
+                    ["vocal"] = MemberValue(broadcast, "vocal")?.ToString(),
+                    ["context"] = MemberInt(broadcast, 0, "context"),
+                    ["duration"] = MemberInt(broadcast, 0, "duration"),
+                    ["lifeTime"] = MemberInt(broadcast, 0, "lifeTime"),
+                    ["factoryIndex"] = MemberInt(broadcast, 0, "factoryIndex"),
+                    ["astroId"] = MemberInt(broadcast, 0, "astroId"),
+                    ["count"] = MemberInt(broadcast, 0, "count"),
+                    ["localPosition"] = VectorOrNull(MemberValue(broadcast, "lpos", "localPos")),
+                    ["focused"] = MemberBool(broadcast, false, "focused"),
+                    ["hidden"] = MemberBool(broadcast, false, "hidden")
                 });
             }
 
@@ -3039,6 +3555,20 @@ namespace AutomaticDSP.State
                     ["y"] = quaternion.y,
                     ["z"] = quaternion.z,
                     ["w"] = quaternion.w
+                };
+            }
+
+            return null;
+        }
+
+        private static object PoseOrNull(object value)
+        {
+            if (value is Pose pose)
+            {
+                return new JsonObject
+                {
+                    ["position"] = Vector(pose.position),
+                    ["rotation"] = QuaternionOrNull(pose.rotation)
                 };
             }
 
@@ -3286,7 +3816,7 @@ namespace AutomaticDSP.State
             return result;
         }
 
-        private JsonObject CaptureResearch()
+        private static JsonObject CaptureResearch()
         {
             var history = GameMain.history;
             if (history == null)
@@ -3313,10 +3843,18 @@ namespace AutomaticDSP.State
             }
 
             var currentTech = ReflectionReader.GetInt(history, 0, "currentTech");
+            object currentState = null;
+            if (currentTech > 0)
+            {
+                currentState = history.TechState(currentTech);
+            }
+
             return new JsonObject
             {
                 ["currentTechId"] = currentTech,
                 ["currentTechName"] = TechName(currentTech),
+                ["hashUploaded"] = ReflectionReader.GetLong(currentState, 0, "hashUploaded"),
+                ["hashNeeded"] = ReflectionReader.GetLong(currentState, 0, "hashNeeded"),
                 ["queueLength"] = ReflectionReader.GetInt(history, queue.Count, "techQueueLength"),
                 ["queue"] = queue,
                 ["techHashedFor10Frames"] = GameMain.statistics?.techHashedFor10Frames ?? 0,
@@ -3350,7 +3888,7 @@ namespace AutomaticDSP.State
             };
         }
 
-        private JsonObject CaptureLocalPlanetFactories()
+        private static JsonObject CaptureLocalPlanetFactories()
         {
             var planet = GameMain.localPlanet;
             var factory = planet?.factory;
@@ -3362,7 +3900,6 @@ namespace AutomaticDSP.State
             var items = new List<object>();
             var byProto = new Dictionary<int, int>();
             var byStatus = new Dictionary<string, int>();
-            var missingPowerTotal = 0;
             var entityCount = 0;
 
             for (var i = 1; i < factory.entityCursor; i++)
@@ -3385,11 +3922,6 @@ namespace AutomaticDSP.State
                     byStatus[key] = statusCount + 1;
                 }
 
-                if (((List<object>)item["status"]).Contains("missingPower"))
-                {
-                    missingPowerTotal++;
-                }
-
                 items.Add(item);
             }
 
@@ -3403,7 +3935,6 @@ namespace AutomaticDSP.State
                 ["items"] = items,
                 ["buildingSummary"] = ItemSummary(byProto),
                 ["statusSummary"] = StatusSummary(byStatus),
-                ["missingPowerBuildingCount"] = missingPowerTotal,
                 ["beltCount"] = ReflectionReader.GetInt(factory.cargoTraffic, 0, "beltCursor"),
                 ["sorterCount"] = ReflectionReader.GetInt(factory.cargoTraffic, 0, "sorterCursor")
             };
@@ -3424,7 +3955,6 @@ namespace AutomaticDSP.State
                 ["entityCursor"] = factoryDetails["entityCursor"],
                 ["buildingSummary"] = factoryDetails["buildingSummary"],
                 ["statusSummary"] = factoryDetails["statusSummary"],
-                ["missingPowerBuildingCount"] = factoryDetails["missingPowerBuildingCount"],
                 ["beltCount"] = factoryDetails["beltCount"],
                 ["sorterCount"] = factoryDetails["sorterCount"]
             };
@@ -3434,11 +3964,6 @@ namespace AutomaticDSP.State
         {
             var status = new List<object>();
             var component = FactoryEntityComponent(factory, entity, status);
-            if (entity.powerNodeId == 0)
-            {
-                status.Add("missingPower");
-            }
-
             return new JsonObject
             {
                 ["entityId"] = entity.id,
@@ -4158,5 +4683,6 @@ namespace AutomaticDSP.State
                 ["z"] = value.z
             };
         }
+
     }
 }

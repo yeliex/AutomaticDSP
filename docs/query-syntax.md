@@ -67,11 +67,19 @@ query Explore {
 - `localPlanet` / `currentPlanet`
 - `localStar`
 - `factory` / `localFactory`
+- `factoryDetails` / `localFactoryDetails`
 - `factories`
 - `production`
 - `power`
+- `research` / `technology`
+- `techs`
+- `recipes`
+- `items`
+- `warningSystem` / `warnings`
 
 扩展根字段会按 `GameMain` 静态成员、`GameMain.instance` 成员、`GameMain.data` 成员依次尝试读取。
+
+`factory` / `localFactory` 返回当前行星的游戏原始 `PlanetFactory` 对象。`factoryDetails` / `localFactoryDetails` 返回面向 Agent 的实体摘要，包含 `items`、`buildingSummary`、`statusSummary` 和常用组件状态，适合在建造、设置配方或拆除后确认结果。
 
 ## 字段发现
 
@@ -189,6 +197,16 @@ query PagedFactory {
 ```graphql
 query InventoryPage {
   inventory {
+    items {
+      itemId
+      name
+      count
+      slots
+    }
+    summary {
+      totalItemCount
+      distinctItemCount
+    }
     grids(limit: 20, offset: 0) {
       itemId
       count
@@ -196,6 +214,8 @@ query InventoryPage {
   }
 }
 ```
+
+`inventory.items` 是对 `grids` 的按物品聚合视图，适合快速判断背包总量；`inventory.grids` 保留游戏原始槽位细节。`mecha.reactorStorage` 等带有 `grids` 的存储对象也支持同样的 `items` / `summary` 派生字段。
 
 ## 过滤
 

@@ -12,7 +12,7 @@ AutomaticDSP 作为独立 BepInEx Mod 运行。Nebula 作为设计参考：它�
 - 游戏主线程每 `60 game ticks` drain 待查询队列，并在主线程为每个请求生成最终 JSON，约 1 秒一次。
 - 任务状态通过独立任务接口查询。
 - `GET /tasks` 查询内存中的待执行或执行中任务。
-- `GET /history` 查询 SQLite 中已完成、失败或取消的历史命令。
+- `GET /history` 查询 SQLite 中已完成、失败、跳过或取消的历史命令。
 - 状态查询结果保存在内存中；历史命令继续保存到 `BepInEx/cache/AutomaticDSP/data/history.sqlite`。
 - HTTP 服务使用 .NET 内置 `HttpListener`，JSON 序列化使用 `Newtonsoft.Json`。
 - HTTP 默认监听 `127.0.0.1:39270`，其中 `HTTP.Host` 和 `HTTP.Port` 都是配置项；需要外部访问时可以把 `HTTP.Host` 改成 `0.0.0.0`。
@@ -208,6 +208,8 @@ AutomaticDSP 作为独立 BepInEx Mod 运行。Nebula 作为设计参考：它�
 
 `status` 当前取值为 `loading`、`running`、`paused`、`ended`、`prologue`、`cutscene`、`error`、`menu`、`unknown`。
 
+`ready = true` 表示状态查询可用，当前包括 `running`、`paused` 和 `prologue`。`prologue` 仍允许查询，是为了让 AI Agent 能通过 `factory.vegePool` 感知开局太空舱等游戏对象。
+
 进入可查询对局时返回：
 
 ```json
@@ -279,7 +281,7 @@ AutomaticDSP 作为独立 BepInEx Mod 运行。Nebula 作为设计参考：它�
 
 返回内存中的待执行或执行中任务。
 
-第一阶段可以返回：
+M1 当前可以返回：
 
 ```json
 {
@@ -287,9 +289,18 @@ AutomaticDSP 作为独立 BepInEx Mod 运行。Nebula 作为设计参考：它�
 }
 ```
 
+M3 起返回唯一顺序任务队列中的待执行或执行中任务。任务提交使用 `POST /tasks`，取消使用 `POST /tasks/{id}/cancel`。任务接口使用 REST JSON，不使用 GraphQL 写操作。
+
+任务执行约束：
+
+- 任务按提交顺序进入同一个队列。
+- 任务内命令按数组顺序执行。
+- 当前命令未完成前不得执行下一条命令。
+- 服务端不得并行、重排或提前执行命令。
+
 ### GET /history
 
-返回 SQLite 中已完成、失败或取消的历史命令。
+返回 SQLite 中已完成、失败、跳过或取消的历史命令。
 
 第一阶段可以返回：
 
@@ -327,8 +338,8 @@ AutomaticDSP 作为独立 BepInEx Mod 运行。Nebula 作为设计参考：它�
 - 主线程 60 tick 查询批处理。
 - `GET /game`。
 - `POST /game/state`。
-- `GET /tasks` 空实现。
-- `GET /history` 空实现。
+- `GET /tasks` 查询内存中的待执行和执行中任务。
+- `GET /history` 查询 SQLite 中的历史命令。
 - SQLite 初始化和历史表结构，数据库位于 `BepInEx/cache/AutomaticDSP/data/history.sqlite`。
 
 验证：
@@ -359,33 +370,46 @@ AutomaticDSP 作为独立 BepInEx Mod 运行。Nebula 作为设计参考：它�
 
 交付：
 
-- 内存任务队列。
+- `TaskQueueService` 内存任务队列。
 - `POST /tasks` 提交任务。
 - `POST /tasks/{id}/cancel` 请求取消任务。
 - `GET /tasks` 返回待执行和执行中任务。
 - `GET /history` 从 SQLite 返回历史命令。
 - no-op 命令执行器。
+- 命令状态、阶段、错误码和结果输出。
 
 验证：
 
 - 多任务按顺序进入同一个队列。
+- 任务内命令严格按数组顺序执行。
 - no-op 命令可以完成并写入 SQLite 历史。
 - queued 任务可以取消。
+- running 任务可以在安全点取消。
 
-### M4：伊卡洛斯移动与背包制造
+### M4：伊卡洛斯移动、采集与背包制造
 
 交付：
 
 - `moveTo` 命令。
+- `mineTarget` 命令。
+- `autoReplenishMechaFuel` 命令。
+- `entityFastFillIn` 命令。
+- `dismantleEntity` 命令。
 - `craftInventory` 命令。
+- `researchTech` 命令。
+- `buyoutTech` 命令。
 - 命令执行状态。
-- 错误码：缺材料、路径受阻、超时。
+- 采集、填充、拆除和建造命令的内部下发半径限制：半径内可自动靠近，半径外返回 `out_of_range` 并要求先 `moveTo`。
+- 错误码：缺材料、路径受阻、超时、配方未解锁、游戏状态不可执行。
 
 验证：
 
 - Agent 可以要求伊卡洛斯移动到指定点。
-- Agent 可以要求背包制造基础建筑。
+- Agent 可以要求伊卡洛斯采集当前行星上的矿脉或地面资源。
+- Agent 可以按 `itemId` 和产物数量要求背包制造基础物品，不需要传入配方。
+- 背包制造材料不足时返回递归汇总后的缺失物品列表。
 - 命令成功、失败、取消都会进入历史。
+- 目标超过命令下发半径时返回 `out_of_range`；半径内距离不足时允许先靠近再执行。
 
 ### M5：基础建造命令
 
@@ -395,13 +419,17 @@ AutomaticDSP 作为独立 BepInEx Mod 运行。Nebula 作为设计参考：它�
 - `placeBelt`。
 - `placeSorter`。
 - `setRecipe`。
-- 建造前校验：科技、物品、地形、碰撞、范围。
+- 建造前结构性校验：游戏状态、当前行星、命令字段、目标引用。
+- 建造规则校验：科技、物品、地形、碰撞、范围和连接规则以游戏原生 BuildTool 结果为准。
+- 建造命令等待游戏内建造完成后才成功。
 
 验证：
 
 - 能放置矿机、熔炉、电塔、传送带、分拣器。
 - 能设置熔炉配方。
 - 失败时返回明确错误码。
+- 目标在命令下发半径内但距离不足时，会先移动靠近并二次校验；超过下发半径时返回 `out_of_range`。
+- 地形、碰撞、科技或物品不足时，不创建实体并返回原生校验映射后的错误。
 
 ### M6：行星内生产线闭环
 
@@ -410,13 +438,14 @@ AutomaticDSP 作为独立 BepInEx Mod 运行。Nebula 作为设计参考：它�
 - `waitUntil`。
 - 简单铁块生产线任务。
 - 生产成功检测。
-- 基础恢复策略。
+- 基础失败诊断：失败命令、错误码、错误消息、游戏 tick。
 
 验证：
 
 - 外部 Agent 能提交任务，完成从矿机到熔炉的铁块生产线。
 - `/game/state` 能反映新建筑、供电和产量变化。
 - `/history` 能追踪每条命令的结果。
+- 任意一条命令失败时，后续命令默认不执行。
 
 ### M7：查询能力增强
 
@@ -425,12 +454,13 @@ AutomaticDSP 作为独立 BepInEx Mod 运行。Nebula 作为设计参考：它�
 - `/game/state` 支持按 section 返回。
 - 支持玩家附近半径过滤。
 - 支持建筑、矿脉、告警数量上限。
-- 评估是否引入 GraphQL 作为只读查询适配层。
+- 支持面向控制命令的建造上下文查询，例如附近实体、预建、矿脉、背包摘要和解锁状态。
 
 验证：
 
 - Agent 可以低成本获取小范围状态。
 - 大型工厂存档通过分页和上限控制单次响应规模。
+- Agent 可以在提交任务前查询足够的局部状态来规划当前行星基础生产线。
 
 ## 实现约束
 
