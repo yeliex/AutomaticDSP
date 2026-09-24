@@ -1,0 +1,4 @@
+interface:
+  display_name: "戴森球计划自动化"
+  short_description: "通过 AutomaticDSP 观察游戏状态、推进科技并规划与验证生产建设"
+  default_prompt: "使用 $automatic-dsp，根据当前存档的科技、产量、电力和资源，规划并执行实现我的游戏目标所需的下一步。"
