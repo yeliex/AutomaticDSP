@@ -158,6 +158,13 @@ namespace AutomaticDSP.Api
                         HandleSaveGame(context);
                     }
                 }
+                else if (path == "/game/exit")
+                {
+                    if (!string.Equals(context.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
+                        WriteJson(context, 405, Error("method_not_allowed", "Only POST is supported for /game/exit."));
+                    else
+                        HandleGameControl(context, () => gameControlService.ExitGame());
+                }
                 else if (path == "/game/load")
                 {
                     if (!string.Equals(context.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
@@ -386,8 +393,8 @@ namespace AutomaticDSP.Api
             {
                 using (var timeout = new CancellationTokenSource(StateQueryTimeout))
                 {
-                    var data = stateQueryService.EnqueueStateQuery(plan, timeout.Token).GetAwaiter().GetResult();
-                    WriteJson(context, 200, new JsonObject { ["data"] = data });
+                    var response = stateQueryService.EnqueueStateQuery(plan, timeout.Token).GetAwaiter().GetResult();
+                    WriteJson(context, 200, response);
                 }
             }
             catch (StateQueryNotReadyException ex)

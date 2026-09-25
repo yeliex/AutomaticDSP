@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using UnityEngine;
 
 namespace AutomaticDSP.State
 {
@@ -20,6 +21,10 @@ namespace AutomaticDSP.State
 
         public int? Offset { get; set; }
 
+        public int? EntityId { get; set; }
+
+        public Vector3? Position { get; set; }
+
         public List<StateQueryFilter> Filters { get; }
 
         public List<StateQueryField> Children { get; }
@@ -29,7 +34,9 @@ namespace AutomaticDSP.State
             var clone = new StateQueryField(Name, ResponseName)
             {
                 Limit = Limit,
-                Offset = Offset
+                Offset = Offset,
+                EntityId = EntityId,
+                Position = Position
             };
 
             foreach (var child in Children)
@@ -47,6 +54,14 @@ namespace AutomaticDSP.State
 
         public void Merge(StateQueryField other)
         {
+            if (!System.Nullable.Equals(Position, other.Position))
+            {
+                throw new StateQueryParseException("同一响应字段不能指定不同的位置；请使用别名。");
+            }
+            if (EntityId != other.EntityId)
+            {
+                throw new StateQueryParseException("同一响应字段不能指定不同的 entityId；请使用别名。");
+            }
             if (!Limit.HasValue && other.Limit.HasValue)
             {
                 Limit = other.Limit;

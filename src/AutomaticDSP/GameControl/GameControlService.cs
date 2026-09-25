@@ -16,6 +16,7 @@ namespace AutomaticDSP.GameControl
         private readonly List<PendingGameControlRequest> pendingRequests = new List<PendingGameControlRequest>();
         private readonly Random random = new Random();
         private DelayedGameStart pendingGameStart;
+        private DateTimeOffset? exitAt;
 
         public GameControlService(ManualLogSource log)
         {
@@ -61,6 +62,12 @@ namespace AutomaticDSP.GameControl
 
         public void Update()
         {
+            if (exitAt.HasValue && DateTimeOffset.UtcNow >= exitAt.Value)
+            {
+                exitAt = null;
+                DSPGame.ExitProgram();
+                return;
+            }
             ProcessDelayedGameStart();
 
             List<PendingGameControlRequest> requests;
@@ -269,6 +276,18 @@ namespace AutomaticDSP.GameControl
                 ["path"] = GameSave.SavePath(normalized),
                 ["status"] = GameStatus()
             };
+        }
+
+        public JsonObject ExitGame()
+        {
+            if (exitAt.HasValue)
+                return new JsonObject { ["accepted"] = true, ["status"] = "exiting" };
+            var status = GameStatus();
+            if (status == "loading" || pendingGameStart != null)
+                throw new GameControlException("invalid_game_status", "Cannot exit during game loading.", status);
+            // 先让 HTTP 响应返回；退出始终在主线程调用原生流程。
+            exitAt = DateTimeOffset.UtcNow.AddSeconds(1);
+            return new JsonObject { ["accepted"] = true, ["status"] = "exiting" };
         }
 
         public JsonObject SkipPrologue()

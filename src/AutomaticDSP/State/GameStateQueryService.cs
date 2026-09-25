@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
@@ -11,7 +12,7 @@ using UnityEngine;
 
 namespace AutomaticDSP.State
 {
-    internal sealed class GameStateQueryService
+    internal sealed partial class GameStateQueryService
     {
         private const int DefaultQueryListLimit = 256;
         private const int MaxQueryListLimit = 2048;
@@ -202,13 +203,28 @@ namespace AutomaticDSP.State
                 result[field.ResponseName] = ResolveQueryValue(source, field, 0);
             }
 
-            return result;
+            return new JsonObject
+            {
+                ["data"] = result,
+                ["trash"] = CaptureTrash(64),
+                ["notifications"] = AutomaticDSP.UI.GameNoticeService.CapturePending()
+            };
         }
 
         private static object ResolveRootSource(string name, long gameTick)
         {
             switch (name)
             {
+                case "trash":
+                    return CaptureTrash(int.MaxValue);
+                case "trashSystem":
+                    return GameMain.data?.trashSystem;
+                case "galacticDigital":
+                    return GameMain.data?.galacticDigital;
+                case "digitalSystem":
+                    return GameMain.localPlanet?.factory?.digitalSystem;
+                case "ui":
+                    return AutomaticDSP.UI.GameNoticeService.Capture();
                 case "metadata":
                     return CaptureQueryMetadata(gameTick);
                 case "_schema":
@@ -256,6 +272,8 @@ namespace AutomaticDSP.State
                     return CaptureRecipePrototypes();
                 case "items":
                     return CaptureItemPrototypes();
+                case "cargo":
+                    return CaptureCargoTables();
                 case "warningSystem":
                 case "warnings":
                     return CaptureWarningSystem();
@@ -274,7 +292,10 @@ namespace AutomaticDSP.State
                 ["queriedAt"] = DateTimeOffset.UtcNow,
                 ["localPlanetId"] = GameMain.localPlanet?.id,
                 ["localStarId"] = GameMain.localStar?.id,
-                ["schemaVersion"] = 1
+                ["schemaVersion"] = 2,
+                ["gameAssemblyVersion"] = typeof(GameMain).Assembly.GetName().Version.ToString(),
+                ["gameVersion"] = GameConfig.gameVersion.ToString(),
+                ["languageLcid"] = Localization.CurrentLanguageLCID
             };
         }
 
@@ -282,9 +303,15 @@ namespace AutomaticDSP.State
         {
             return new JsonObject
             {
+                ["prototypeFields"] = PrototypeFieldContracts(),
                 ["roots"] = new List<object>
                 {
                     QueryRoot("metadata", "object", "Query metadata for the current state read."),
+                    QueryRoot("trash", "object", "垃圾条目、所属星球、位置与拾取几何范围；支持 entries 分页。"),
+                    QueryRoot("trashSystem", "object", "原生全局垃圾系统及 container 数据池。"),
+                    QueryRoot("galacticDigital", "object", "原生全局数字系统：全息信标 markerPool 和备忘录 todos.buffer。"),
+                    QueryRoot("digitalSystem", "object", "当前行星原生数字系统：全息信标 markers.buffer 和行星备忘录 planetTodo。"),
+                    QueryRoot("ui", "object", "信息提示及确认记录与原生游戏目标面板。"),
                     QueryRoot("game", "object", "Stable game/session summary."),
                     QueryRoot("gameMain", "object", "GameMain instance for selected field reads."),
                     QueryRoot("data", "object", "GameMain.data for selected field reads."),
@@ -310,6 +337,7 @@ namespace AutomaticDSP.State
                     QueryRoot("techs", "list", "Technology prototype summaries."),
                     QueryRoot("recipes", "list", "Recipe prototype summaries."),
                     QueryRoot("items", "list", "Item prototype summaries."),
+                    QueryRoot("cargo", "object", "游戏原生 Cargo 增产、加速和耗电倍率表，按喷涂点数索引。"),
                     QueryRoot("warningSystem", "object", "Current game warning and broadcast summary."),
                     QueryRoot("warnings", "object", "Alias of warningSystem.")
                 }
@@ -383,7 +411,11 @@ namespace AutomaticDSP.State
             var result = new JsonObject();
             foreach (var field in fields)
             {
-                var value = ResolveQueryMember(source, field.Name);
+                var value = source is PlanetFactory factory && field.Name == "objectConnections"
+                    ? CaptureObjectConnections(factory, field.EntityId.Value)
+                    : source is PlanetData planet && field.Name == "surface"
+                    ? CaptureSurface(planet, field.Position.Value)
+                    : ResolveQueryMember(source, field.Name);
                 result[field.ResponseName] = ResolveQueryValue(value, field, depth);
             }
 
@@ -664,11 +696,6 @@ namespace AutomaticDSP.State
             {
                 foreach (var pair in jsonObject)
                 {
-                    if (result.Count >= OneLevelMemberLimit)
-                    {
-                        break;
-                    }
-
                     if (pair.Value != null && (!IsQueryableMember(pair.Key, pair.Value.GetType()) || IsRuntimeValue(pair.Value)))
                     {
                         continue;
@@ -680,15 +707,42 @@ namespace AutomaticDSP.State
                 return result;
             }
 
+            if (source is PrefabDesc)
+            {
+                foreach (var name in PrefabQueryFields)
+                {
+                    var descriptor = FieldDescriptor(name, name == "capacityJ" ? typeof(long) : typeof(double));
+                    foreach (JsonObject contract in PrototypeFieldContracts())
+                    {
+                        if ((string)contract["path"] != "items.prefabDesc." + name) continue;
+                        foreach (var pair in contract) descriptor[pair.Key] = pair.Value;
+                    }
+                    descriptor["nullable"] = true;
+                    result.Add(descriptor);
+                }
+            }
+            if (source is PlanetFactory)
+            {
+                result.Add(new JsonObject
+                {
+                    ["name"] = "objectConnections", ["kind"] = "object", ["type"] = "ObjectConnections",
+                    ["description"] = "只读实体端口及原生连接记录，必须指定正整数 entityId。"
+                });
+            }
+
+            if (source is PlanetData)
+            {
+                result.Add(new JsonObject
+                {
+                    ["name"] = "surface", ["kind"] = "object", ["type"] = "SurfaceSample",
+                    ["description"] = "指定 x、y、z 行星局部坐标，读取原生地形高度；不是建筑可建性判断。"
+                });
+            }
+
             var type = source.GetType();
             var flags = BindingFlags.Instance | BindingFlags.Public;
             foreach (var field in type.GetFields(flags))
             {
-                if (result.Count >= OneLevelMemberLimit)
-                {
-                    return result;
-                }
-
                 if (!IsQueryableMember(field.Name, field.FieldType))
                 {
                     continue;
@@ -699,11 +753,6 @@ namespace AutomaticDSP.State
 
             foreach (var property in type.GetProperties(flags))
             {
-                if (result.Count >= OneLevelMemberLimit)
-                {
-                    break;
-                }
-
                 if (property.GetIndexParameters().Length != 0)
                 {
                     continue;
@@ -1018,6 +1067,11 @@ namespace AutomaticDSP.State
             {
                 value = null;
                 return false;
+            }
+
+            if (TryGetPrototypeMember(target, name, out value))
+            {
+                return true;
             }
 
             if (TryGetDerivedQueryableMemberValue(target, name, out value))
@@ -2508,7 +2562,7 @@ namespace AutomaticDSP.State
                 return result;
             }
 
-            foreach (var value in values)
+            foreach (var value in values.OfType<RecipeProto>().OrderBy(proto => proto.ID))
             {
                 if (!(value is RecipeProto recipe) || recipe.ID <= 0)
                 {
@@ -2522,6 +2576,10 @@ namespace AutomaticDSP.State
                     ["type"] = recipe.Type.ToString(),
                     ["handcraft"] = recipe.Handcraft,
                     ["explicit"] = recipe.Explicit,
+                    ["timeSpendRaw"] = recipe.TimeSpend,
+                    ["timeSeconds"] = recipe.TimeSpend / 60.0,
+                    ["productive"] = recipe.productive,
+                    ["raw"] = recipe,
                     ["unlocked"] = GameMain.history != null && GameMain.history.RecipeUnlocked(recipe.ID),
                     ["items"] = RecipeItems(recipe.Items, recipe.ItemCounts),
                     ["results"] = RecipeItems(recipe.Results, recipe.ResultCounts)
@@ -2540,7 +2598,7 @@ namespace AutomaticDSP.State
                 return result;
             }
 
-            foreach (var value in values)
+            foreach (var value in values.OfType<ItemProto>().OrderBy(proto => proto.ID))
             {
                 if (!(value is ItemProto item) || item.ID <= 0)
                 {
@@ -2554,6 +2612,13 @@ namespace AutomaticDSP.State
                     ["name"] = item.name,
                     ["type"] = item.Type.ToString(),
                     ["stackSize"] = item.StackSize,
+                    ["heatValueJ"] = item.HeatValue,
+                    ["fuelType"] = item.FuelType,
+                    ["reactorInc"] = item.ReactorInc,
+                    ["productive"] = item.Productive,
+                    ["modelIndex"] = item.ModelIndex,
+                    ["raw"] = item,
+                    ["prefabDesc"] = desc,
                     ["isEntity"] = item.IsEntity,
                     ["canBuild"] = item.CanBuild,
                     ["unlocked"] = GameMain.history != null && GameMain.history.ItemUnlocked(item.ID),

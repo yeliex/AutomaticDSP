@@ -68,6 +68,7 @@ namespace AutomaticDSP
 
         private void Update()
         {
+            GameNoticeService.Update();
             stateQueryService?.Update();
             gameControlService?.Update();
             taskQueueService?.Update();

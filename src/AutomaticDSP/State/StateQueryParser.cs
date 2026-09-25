@@ -115,6 +115,24 @@ namespace AutomaticDSP.State
                 Offset = IntArgument(field.Arguments, "offset")
             };
 
+            if (name == "objectConnections")
+            {
+                queryField.EntityId = IntArgument(field.Arguments, "entityId");
+                if (!queryField.EntityId.HasValue || queryField.EntityId.Value <= 0)
+                {
+                    throw new StateQueryParseException("objectConnections 必须指定正整数 entityId。");
+                }
+            }
+
+            if (name == "surface")
+            {
+                var position = new UnityEngine.Vector3(CoordinateArgument(field.Arguments, "x"),
+                    CoordinateArgument(field.Arguments, "y"), CoordinateArgument(field.Arguments, "z"));
+                if (position.sqrMagnitude < 0.000001f || float.IsInfinity(position.sqrMagnitude))
+                    throw new StateQueryParseException("surface 需要有效的非零行星局部坐标。");
+                queryField.Position = position;
+            }
+
             foreach (var filter in ParseWhereFilters(field.Arguments))
             {
                 queryField.Filters.Add(filter);
@@ -144,6 +162,26 @@ namespace AutomaticDSP.State
             }
 
             return null;
+        }
+
+        private static float CoordinateArgument(GraphQLArguments arguments, string name)
+        {
+            if (arguments?.Items != null)
+            {
+                foreach (var argument in arguments.Items)
+                {
+                    if (argument.Name.StringValue != name) continue;
+                    var scalar = ParseFilterScalar(argument.Value);
+                    if (scalar is long || scalar is double)
+                    {
+                        var number = Convert.ToDouble(scalar, CultureInfo.InvariantCulture);
+                        if (!double.IsNaN(number) && !double.IsInfinity(number) && Math.Abs(number) <= float.MaxValue)
+                            return (float)number;
+                    }
+                    break;
+                }
+            }
+            throw new StateQueryParseException("surface 必须指定有限数字 x、y、z。");
         }
 
         private static int? IntArgument(GraphQLArguments arguments, string name)
