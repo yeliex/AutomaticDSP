@@ -41,7 +41,9 @@ namespace AutomaticDSP.Tasks
                 return;
             }
 
-            if (!TryGetVector(command, "position", out var position, out errorMessage))
+            var stackOnEntityId = GetInt(command, "stackOnEntityId", 0);
+            var position = Vector3.zero;
+            if (stackOnEntityId == 0 && !TryGetVector(command, "position", out position, out errorMessage))
             {
                 finishCommand(command, CommandFailed, "invalid_command", errorMessage, now, null);
                 return;
@@ -75,10 +77,47 @@ namespace AutomaticDSP.Tasks
             }
 
             var yaw = (float)GetDouble(command, "rotation", 0);
+            if (desc.addonType == EAddonType.Belt)
+            {
+                ExecutePlaceBeltAddonLocked(command, player, factory, item, position, yaw, stackOnEntityId, now);
+                return;
+            }
             var veinMiningBuilding = IsVeinMiningBuilding(desc);
-            var snappedPosition = veinMiningBuilding
+            var snappedPosition = stackOnEntityId != 0 ? Vector3.zero : (veinMiningBuilding
                 ? position.normalized * (factory.planet.realRadius + 0.2f)
-                : factory.planet.aux.Snap(position, onTerrain: true);
+                : factory.planet.aux.Snap(position, onTerrain: true));
+            var rotation = stackOnEntityId != 0 ? Quaternion.identity : Maths.SphericalRotation(snappedPosition, yaw);
+            if (stackOnEntityId != 0)
+            {
+                if (!desc.multiLevel || stackOnEntityId < 1 || stackOnEntityId >= factory.entityCursor ||
+                    factory.entityPool[stackOnEntityId].id != stackOnEntityId)
+                {
+                    finishCommand(command, CommandFailed, "invalid_command", "Stacking requires a stackable item and an existing base entity.", now, null);
+                    return;
+                }
+
+                var baseEntity = factory.entityPool[stackOnEntityId];
+                var baseDesc = LDB.items.Select(baseEntity.protoId)?.prefabDesc;
+                var alternativeIndex = desc.multiLevelAlternativeIds == null ? -1 : Array.IndexOf(desc.multiLevelAlternativeIds, (int)baseEntity.protoId);
+                if (baseDesc == null || (baseEntity.protoId != itemId && alternativeIndex < 0))
+                {
+                    finishCommand(command, CommandFailed, "invalid_command", "The item cannot stack on this base entity.", now, null);
+                    return;
+                }
+
+                if (!TryEnsureObjectSlotAvailable(factory, stackOnEntityId, 15, out errorMessage))
+                {
+                    finishCommand(command, CommandFailed, "slot_occupied", errorMessage, now, null);
+                    return;
+                }
+
+                // 与原生叠放预览一致：由下层搭接点决定位置，层数仍交给原生校验。
+                snappedPosition = baseEntity.pos + baseEntity.rot * baseDesc.lapJoint;
+                rotation = desc.multiLevelAllowRotate ? Maths.SphericalRotation(snappedPosition, yaw) : baseEntity.rot;
+                if (!desc.multiLevelAllowRotate && baseEntity.protoId != itemId && alternativeIndex >= 0 &&
+                    desc.multiLevelAlternativeYawTransposes[alternativeIndex])
+                    rotation *= Quaternion.Euler(0f, 90f, 0f);
+            }
             if (!IsWithinCommandIssueRange(player, snappedPosition, out var commandDistance, out var commandRange))
             {
                 finishCommand(
@@ -91,7 +130,6 @@ namespace AutomaticDSP.Tasks
                 return;
             }
 
-            var rotation = Maths.SphericalRotation(snappedPosition, yaw);
             var tool = new AutomationClickBuildTool();
             try
             {
@@ -107,6 +145,7 @@ namespace AutomaticDSP.Tasks
                         factory,
                         snappedPosition,
                         requestedVeinId,
+                        desc.oilMiner,
                         out var veinId,
                         out var veinPosition,
                         out errorMessage))
@@ -119,6 +158,7 @@ namespace AutomaticDSP.Tasks
                 }
 
                 player.controller.cmd.type = ECommand.Build;
+                command.EnteredBuildMode = true;
                 player.controller.cmd.mode = item.BuildMode;
                 player.controller.cmd.refId = item.ID;
                 player.controller.cmd.target = snappedPosition;
@@ -142,11 +182,17 @@ namespace AutomaticDSP.Tasks
                 var colliderArea = desc.buildCollider.ext.magnitude + 4f;
                 preview.genNearColliderArea2 = colliderArea * colliderArea;
                 preview.condition = EBuildCondition.Ok;
-                tool.buildPreviews.Add(preview);
-                if (!veinMiningBuilding)
+                if (stackOnEntityId > 0)
                 {
-                    ActivateBuildColliders(factory, preview);
+                    tool.multiLevelCovering = true;
+                    tool.castObjectId = stackOnEntityId;
+                    preview.inputObjId = stackOnEntityId;
+                    preview.inputFromSlot = 15;
+                    preview.inputToSlot = 14;
                 }
+                tool.buildPreviews.Add(preview);
+                // 矿机同样需要附近建筑的碰撞体，否则原生校验会漏掉已有建筑。
+                ActivateBuildColliders(factory, preview);
 
                 command.Phase = "validating";
                 var canBuild = tool.CheckBuildConditions();
@@ -194,8 +240,7 @@ namespace AutomaticDSP.Tasks
         {
             return item != null &&
                 item.prefabDesc != null &&
-                (ReflectionReader.GetBool(item.prefabDesc, false, "isMiner", "isVeinMiner") ||
-                    item.prefabDesc.minerType != EMinerType.None);
+                (IsVeinMiningBuilding(item.prefabDesc) || item.prefabDesc.oilMiner);
         }
 
         private static bool IsVeinMiningBuilding(PrefabDesc desc)
@@ -209,6 +254,7 @@ namespace AutomaticDSP.Tasks
             PlanetFactory factory,
             Vector3 buildPosition,
             int requestedVeinId,
+            bool oilMiner,
             out int veinId,
             out Vector3 veinPosition,
             out string errorMessage)
@@ -224,7 +270,7 @@ namespace AutomaticDSP.Tasks
 
             if (requestedVeinId > 0)
             {
-                if (!TryGetMiningBuildVein(factory, requestedVeinId, out var vein))
+                if (!TryGetMiningBuildVein(factory, requestedVeinId, oilMiner, out var vein))
                 {
                     errorMessage = $"Vein not found or not suitable for a mining building: {requestedVeinId}";
                     return false;
@@ -238,7 +284,7 @@ namespace AutomaticDSP.Tasks
             var bestDistance = float.MaxValue;
             for (var i = 1; i < factory.veinCursor; i++)
             {
-                if (!TryGetMiningBuildVein(factory, i, out var vein))
+                if (!TryGetMiningBuildVein(factory, i, oilMiner, out var vein))
                 {
                     continue;
                 }
@@ -259,11 +305,11 @@ namespace AutomaticDSP.Tasks
                 return true;
             }
 
-            errorMessage = "Mining building requires veinId or a nearby non-oil vein.";
+            errorMessage = oilMiner ? "Oil extractor requires veinId or a nearby oil seep." : "Mining building requires veinId or a nearby non-oil vein.";
             return false;
         }
 
-        private static bool TryGetMiningBuildVein(PlanetFactory factory, int veinId, out VeinData vein)
+        private static bool TryGetMiningBuildVein(PlanetFactory factory, int veinId, bool oilMiner, out VeinData vein)
         {
             vein = default;
             if (veinId <= 0 ||
@@ -276,7 +322,7 @@ namespace AutomaticDSP.Tasks
             }
 
             vein = factory.veinPool[veinId];
-            return vein.amount > 0 && vein.type != EVeinType.Oil && vein.productId > 0;
+            return vein.amount > 0 && (vein.type == EVeinType.Oil) == oilMiner && vein.productId > 0;
         }
 
         private static void ActivateBuildColliders(PlanetFactory factory, BuildPreview preview)

@@ -30,6 +30,16 @@ namespace AutomaticDSP.Tasks
 
         public string Phase { get; set; }
 
+        public bool EnteredBuildMode { get; set; }
+
+        public bool Background { get; set; }
+
+        public bool OwnsPlayerOrders { get; set; }
+
+        public List<string> Dependencies { get; } = new List<string>();
+
+        public ForgeTask NativeForgeTask { get; set; }
+
         public DateTimeOffset? StartedAt { get; set; }
 
         public DateTimeOffset? CompletedAt { get; set; }

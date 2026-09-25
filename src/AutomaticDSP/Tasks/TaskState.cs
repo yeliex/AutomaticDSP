@@ -26,6 +26,8 @@ namespace AutomaticDSP.Tasks
 
         public bool StopOnFailure { get; }
 
+        public bool Immediate { get; set; }
+
         public List<CommandState> Commands { get; }
 
         public string Status { get; set; }

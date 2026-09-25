@@ -10,6 +10,8 @@ namespace AutomaticDSP.Tasks
 
         public bool? StopOnFailure { get; set; }
 
+        public bool Immediate { get; set; }
+
         public List<TaskCommandRequest> Commands { get; set; }
     }
 
@@ -26,6 +28,8 @@ namespace AutomaticDSP.Tasks
         public long? DurationTicks { get; set; }
 
         public JToken Condition { get; set; }
+
+        public List<string> DependsOn { get; set; }
 
         [JsonExtensionData]
         public IDictionary<string, JToken> ExtensionData { get; set; }

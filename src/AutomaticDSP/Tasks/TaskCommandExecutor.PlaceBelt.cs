@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using AutomaticDSP.Serialization;
 using Newtonsoft.Json.Linq;
@@ -76,6 +76,19 @@ namespace AutomaticDSP.Tasks
                     return;
                 }
 
+                // 已有带段作为连接对象，不再生成同位置的预览；重合点会让原生坡度计算误报 TooSteep。
+                if (startEndpoint?.EntityId > 0 && tool.ObjectIsBelt(startEndpoint.EntityId) &&
+                    (pathPoints[0] - tool.GetObjectPose(startEndpoint.EntityId).position).sqrMagnitude < 0.01f)
+                    pathPoints.RemoveAt(0);
+                if (pathPoints.Count > 0 && endEndpoint?.EntityId > 0 && tool.ObjectIsBelt(endEndpoint.EntityId) &&
+                    (pathPoints[pathPoints.Count - 1] - tool.GetObjectPose(endEndpoint.EntityId).position).sqrMagnitude < 0.01f)
+                    pathPoints.RemoveAt(pathPoints.Count - 1);
+                if (pathPoints.Count == 0)
+                {
+                    finishCommand(command, CommandFailed, "invalid_command", "Belt path contains no new points between its existing endpoints.", now, null);
+                    return;
+                }
+
                 if (!AreAllWithinCommandIssueRange(player, pathPoints, out var failedTarget, out var commandDistance, out var commandRange))
                 {
                     finishCommand(
@@ -89,6 +102,7 @@ namespace AutomaticDSP.Tasks
                 }
 
                 player.controller.cmd.type = ECommand.Build;
+                command.EnteredBuildMode = true;
                 player.controller.cmd.mode = item.BuildMode;
                 player.controller.cmd.stage = 1;
                 player.controller.cmd.refId = item.ID;
@@ -147,6 +161,12 @@ namespace AutomaticDSP.Tasks
                 {
                     finishCommand(command, CommandFailed, "invalid_connection", errorMessage, now, null);
                     return;
+                }
+
+                // 原生物理查询依赖附近碰撞体已激活，否则可能漏掉交叉处的已有带段。
+                foreach (var preview in tool.buildPreviews)
+                {
+                    ActivateBuildColliders(factory, preview);
                 }
 
                 command.Phase = "validating";
@@ -310,6 +330,10 @@ namespace AutomaticDSP.Tasks
                 errorMessage = "Belt path could not be snapped to the planet grid.";
                 return false;
             }
+
+            // 与原生 BuildTool_Path 一致，吸附中间点后恢复实际端点，避免在偏离网格的已有带段旁重复建带。
+            snaps[0] = start;
+            snaps[count - 1] = end;
 
             for (var i = 0; i < count; i++)
             {

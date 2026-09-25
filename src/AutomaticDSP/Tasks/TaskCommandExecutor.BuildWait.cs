@@ -120,7 +120,7 @@ namespace AutomaticDSP.Tasks
                     }
                 }
 
-                if (TryFindBuiltEntity(factory, target.ItemId, target.Position, out var entityId))
+                if (TryFindBuiltEntity(factory, target.ItemId, target.Position, out var entityId, target.Preview))
                 {
                     target.EntityId = entityId;
                     entityIds.Add(entityId);
@@ -144,7 +144,7 @@ namespace AutomaticDSP.Tasks
             finishCommand(command, CommandSucceeded, null, null, now, result);
         }
 
-        private static bool TryFindBuiltEntity(PlanetFactory factory, int itemId, Vector3 position, out int entityId)
+        private static bool TryFindBuiltEntity(PlanetFactory factory, int itemId, Vector3 position, out int entityId, BuildPreview preview = null)
         {
             entityId = 0;
             if (factory.entityPool == null)
@@ -165,6 +165,19 @@ namespace AutomaticDSP.Tasks
                 if (distance >= bestDistance)
                 {
                     continue;
+                }
+
+                if (preview?.desc?.isInserter == true)
+                {
+                    // 多个分拣器可以共用同一取物位置，必须通过两端连接区分实体。
+                    factory.ReadObjectConn(i, 1, out var _, out var inputObjectId, out var inputSlot);
+                    factory.ReadObjectConn(i, 0, out var _, out var outputObjectId, out var outputSlot);
+                    if (inputObjectId != preview.inputObjId || outputObjectId != preview.outputObjId ||
+                        (preview.inputFromSlot >= 0 && inputSlot != preview.inputFromSlot) ||
+                        (preview.outputToSlot >= 0 && outputSlot != preview.outputToSlot))
+                    {
+                        continue;
+                    }
                 }
 
                 bestDistance = distance;

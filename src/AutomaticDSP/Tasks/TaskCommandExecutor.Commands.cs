@@ -1043,19 +1043,33 @@ namespace AutomaticDSP.Tasks
                 return;
             }
 
+            command.NativeForgeTask = task;
             command.ActionIssued = true;
+            if (!GetBool(command, "waitForCompletion", false))
+            {
+                finishCommand(command, CommandSucceeded, null, null, now, new JsonObject
+                {
+                    ["action"] = "enqueued", ["recipeId"] = recipeId,
+                    ["craftCount"] = craftCount, ["completed"] = false
+                });
+                return;
+            }
             WaitForCraftCompletionLocked(command, now);
         }
 
         private void WaitForCraftCompletionLocked(CommandState command, DateTimeOffset now)
         {
             command.Phase = "crafting";
-            foreach (var pair in command.CraftTargets)
+            var forge = GameMain.mainPlayer?.mecha?.forge;
+            // 并行操作可能立即消耗产物，以本次原生任务剩余次数判断完成，不以库存净增判断。
+            if (command.NativeForgeTask == null || command.NativeForgeTask.count > 0)
             {
-                if (InventoryCount(pair.Key) < pair.Value)
-                {
-                    return;
-                }
+                if (forge == null || command.NativeForgeTask == null || !forge.tasks.Contains(command.NativeForgeTask))
+                    finishCommand(command, CommandFailed, "craft_interrupted", "Native forge task was removed before completion.", now, null);
+                else
+                    command.Result = new JsonObject { ["recipeId"] = command.CraftRecipeId,
+                        ["remainingCount"] = command.NativeForgeTask.count, ["forgeTotalTime"] = forge.totalTime };
+                return;
             }
 
             var recipe = LDB.recipes.Select(command.CraftRecipeId);
@@ -1096,7 +1110,7 @@ namespace AutomaticDSP.Tasks
                 return;
             }
 
-            var waitForUnlock = GetBool(command, "waitForUnlock", true);
+            var waitForUnlock = GetBool(command, "waitForUnlock", false);
             if (history.TechUnlocked(techId))
             {
                 finishCommand(command, CommandSucceeded, null, null, now, ResearchTechResult(history, tech, command.ActionIssued ? "unlocked" : "alreadyUnlocked"));
@@ -1132,6 +1146,11 @@ namespace AutomaticDSP.Tasks
             }
 
             command.Phase = "waitingResearch";
+            if (!history.TechInQueue(techId) && !history.TechUnlocked(techId))
+            {
+                finishCommand(command, CommandFailed, "research_interrupted", "Research was removed from the native queue.", now, null);
+                return;
+            }
             if (history.TechUnlocked(techId))
             {
                 finishCommand(command, CommandSucceeded, null, null, now, ResearchTechResult(history, tech, "unlocked"));
@@ -1216,6 +1235,11 @@ namespace AutomaticDSP.Tasks
                 return;
             }
 
+            if (TryGetInt(command, "techId", out var expectedTechId) && queue[index] != expectedTechId)
+            {
+                finishCommand(command, CommandFailed, "queue_changed", "Research queue changed; refresh index and techId.", now, null);
+                return;
+            }
             history.RemoveTechInQueue(index);
             finishCommand(command, CommandSucceeded, null, null, now, TechQueueResult(history, "removed"));
         }

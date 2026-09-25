@@ -4,6 +4,27 @@ using UnityEngine;
 
 namespace AutomaticDSP.Tasks
 {
+    internal sealed class AutomationAddonBuildTool : BuildTool_Addon
+    {
+        private static readonly FieldInfo PotentialBeltCursors = typeof(BuildTool_Addon).GetField("potentialBeltCursorArray", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        public void PrepareInventorySnapshot()
+        {
+            if (tmpPackage == null) tmpPackage = new StorageComponent(player.package.size);
+            if (tmpPackage.size != player.package.size) tmpPackage.SetSize(player.package.size);
+            Array.Copy(player.package.grids, tmpPackage.grids, tmpPackage.size);
+            tmpInhandId = player.inhandItemId;
+            tmpInhandCount = player.inhandItemCount;
+        }
+
+        public void ResetBeltSearch()
+        {
+            // 原生 Addon._OnTick 在吸附与严格连接校验之间重置同一组计数。
+            var cursors = (int[])PotentialBeltCursors.GetValue(this);
+            Array.Clear(cursors, 0, cursors.Length);
+        }
+    }
+
     internal sealed class AutomationClickBuildTool : BuildTool_Click
     {
         public void PrepareInventorySnapshot()

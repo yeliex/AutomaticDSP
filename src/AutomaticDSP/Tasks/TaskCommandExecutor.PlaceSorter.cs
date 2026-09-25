@@ -55,6 +55,15 @@ namespace AutomaticDSP.Tasks
                 return;
             }
 
+            var filterItemId = 0;
+            if (TryGetToken(command, "filterItemId", out _) &&
+                (!TryGetInt(command, "filterItemId", out filterItemId) || filterItemId < 0 ||
+                 (filterItemId > 0 && LDB.items.Select(filterItemId) == null)))
+            {
+                finishCommand(command, CommandFailed, "invalid_command", "filterItemId must be zero or an existing item ID.", now, null);
+                return;
+            }
+
             if (!TryGetSorterEndpoint(task, command, "input", out var inputEndpoint, out errorMessage) ||
                 !TryGetSorterEndpoint(task, command, "output", out var outputEndpoint, out errorMessage))
             {
@@ -85,6 +94,32 @@ namespace AutomaticDSP.Tasks
                 }
 
                 var issueTargets = new List<Vector3> { inputPosition, outputPosition, Vector3.Lerp(inputPosition, outputPosition, 0.5f) };
+                var inputIsBelt = tool.ObjectIsBelt(inputEndpoint.EntityId);
+                var outputIsBelt = tool.ObjectIsBelt(outputEndpoint.EntityId);
+                var direction = outputPosition - inputPosition;
+                if (inputIsBelt) inputRotation = OrientBeltSorterSlot(inputRotation, direction);
+                if (outputIsBelt) outputRotation = OrientBeltSorterSlot(outputRotation, -direction);
+                // 原生 DeterminePreviews 的端点配对校验不在 CheckBuildConditions 内。
+                // 保留其角度容差，阻止跨架高层或背向插槽；球面上不能比较全局 y。
+                var bias = Mathf.Max(Vector3.Angle(direction, inputRotation * Vector3.forward),
+                    Vector3.Angle(-direction, outputRotation * Vector3.forward));
+                bias = Mathf.Max(bias, 180f - Vector3.Angle(inputRotation * Vector3.forward, outputRotation * Vector3.forward));
+                var allowedBias = inputIsBelt || outputIsBelt ? 11f : 14f;
+                if (bias >= allowedBias)
+                {
+                    finishCommand(command, CommandFailed, "invalid_connection", "Sorter endpoints fail native pose alignment; check height and slot facing.", now,
+                        new JsonObject { ["condition"] = "NeedConn", ["endpointAngle"] = bias,
+                            ["maxEndpointAngle"] = allowedBias,
+                            ["heightDifference"] = Mathf.Abs(inputPosition.magnitude - outputPosition.magnitude) });
+                    return;
+                }
+                // 原生写入会替换已有连接；任务不能因复用插槽而断开其他分拣器。
+                if (!TryEnsureObjectSlotAvailable(factory, inputEndpoint.EntityId, inputSlot, out errorMessage) ||
+                    !TryEnsureObjectSlotAvailable(factory, outputEndpoint.EntityId, outputSlot, out errorMessage))
+                {
+                    finishCommand(command, CommandFailed, "slot_occupied", errorMessage, now, null);
+                    return;
+                }
                 if (!AreAllWithinCommandIssueRange(player, issueTargets, out var failedTarget, out var commandDistance, out var commandRange))
                 {
                     finishCommand(
@@ -98,6 +133,7 @@ namespace AutomaticDSP.Tasks
                 }
 
                 player.controller.cmd.type = ECommand.Build;
+                command.EnteredBuildMode = true;
                 player.controller.cmd.mode = item.BuildMode;
                 player.controller.cmd.stage = 1;
                 player.controller.cmd.refId = item.ID;
@@ -118,7 +154,7 @@ namespace AutomaticDSP.Tasks
                 preview.lpos = inputPosition;
                 preview.lrot = inputRotation;
                 preview.lpos2 = outputPosition;
-                preview.lrot2 = outputRotation;
+                preview.lrot2 = outputRotation * Quaternion.Euler(0f, 180f, 0f);
                 preview.inputObjId = inputEndpoint.EntityId;
                 preview.inputFromSlot = inputSlot;
                 preview.inputToSlot = 1;
@@ -127,9 +163,13 @@ namespace AutomaticDSP.Tasks
                 preview.outputToSlot = outputSlot;
                 preview.condition = EBuildCondition.Ok;
                 preview.needModel = false;
+                // 在预建中保存筛选，避免落成到后续设置命令之间误送其他产物。
+                preview.filterId = filterItemId;
                 preview.genNearColliderArea2 = 25;
                 tool.buildPreviews.Add(preview);
 
+                ActivateBuildColliders(factory, preview);
+                factory.planet.physics?.nearColliderLogic?.ActiveCollidersInArea(outputPosition, 5f);
                 command.Phase = "validating";
                 var canBuild = tool.CheckBuildConditions();
                 if (!canBuild || preview.condition != EBuildCondition.Ok)
@@ -172,6 +212,23 @@ namespace AutomaticDSP.Tasks
 
             WaitForBuiltObjectsLocked(command, now);
         }
+        private static Quaternion OrientBeltSorterSlot(Quaternion rotation, Vector3 direction)
+        {
+            var best = rotation;
+            var angle = Vector3.Angle(direction, rotation * Vector3.forward);
+            for (var yaw = 90; yaw < 360; yaw += 90)
+            {
+                var candidate = rotation * Quaternion.Euler(0f, yaw, 0f);
+                var candidateAngle = Vector3.Angle(direction, candidate * Vector3.forward);
+                if (candidateAngle < angle)
+                {
+                    best = candidate;
+                    angle = candidateAngle;
+                }
+            }
+            return best;
+        }
+
         private static bool TryGetSorterEndpoint(
             TaskState task,
             CommandState command,
@@ -302,42 +359,37 @@ namespace AutomaticDSP.Tasks
             }
 
             var objectPose = tool.GetObjectPose(endpoint.EntityId);
-            if (endpoint.HasPosition)
-            {
-                position = endpoint.Position;
-                rotation = objectPose.rotation;
-                if (tool.ObjectIsBelt(endpoint.EntityId))
-                {
-                    slot = -1;
-                }
-
-                return true;
-            }
-
             if (tool.ObjectIsBelt(endpoint.EntityId))
             {
                 position = objectPose.position;
                 rotation = Quaternion.AngleAxis(tool.GetObjectTilt(endpoint.EntityId), objectPose.forward) * objectPose.rotation;
                 slot = -1;
-                return true;
+            }
+            else
+            {
+                var slots = tool.GetLocalSlots(endpoint.EntityId);
+                if (slots == null || slots.Length == 0)
+                {
+                    errorMessage = $"Sorter endpoint has no slots: {endpoint.EntityId}";
+                    return false;
+                }
+
+                if (slot < 0 || slot >= slots.Length)
+                {
+                    errorMessage = $"Sorter endpoint slot is out of range: {endpoint.EntityId}/{slot}";
+                    return false;
+                }
+
+                var pose = slots[slot].GetTransformedBy(objectPose);
+                position = pose.position;
+                rotation = pose.rotation;
             }
 
-            var slots = tool.GetLocalSlots(endpoint.EntityId);
-            if (slots == null || slots.Length == 0)
+            if (endpoint.HasPosition && (endpoint.Position - position).sqrMagnitude > 0.0001f)
             {
-                errorMessage = $"Sorter endpoint has no slots: {endpoint.EntityId}";
+                errorMessage = $"Sorter endpoint position must match its belt or building slot: {endpoint.EntityId}/{slot}";
                 return false;
             }
-
-            if (slot < 0 || slot >= slots.Length)
-            {
-                errorMessage = $"Sorter endpoint slot is out of range: {endpoint.EntityId}/{slot}";
-                return false;
-            }
-
-            var pose = slots[slot].GetTransformedBy(objectPose);
-            position = pose.position;
-            rotation = pose.rotation;
             return true;
         }
     }

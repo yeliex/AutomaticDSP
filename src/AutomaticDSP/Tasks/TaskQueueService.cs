@@ -9,7 +9,7 @@ using static AutomaticDSP.Tasks.TaskStatusNames;
 
 namespace AutomaticDSP.Tasks
 {
-    internal sealed class TaskQueueService
+    internal sealed partial class TaskQueueService
     {
         private readonly HistoryStore historyStore;
         private readonly TaskCommandExecutor commandExecutor;
@@ -30,7 +30,7 @@ namespace AutomaticDSP.Tasks
             lock (queueLock)
             {
                 var task = CreateTask(request);
-                task.QueueIndex = ActiveTaskCountLocked();
+                task.QueueIndex = HasInstructionWork(task) ? ActiveTaskCountLocked() : -1;
                 tasks.Add(task);
                 return new JsonObject
                 {
@@ -78,7 +78,6 @@ namespace AutomaticDSP.Tasks
             lock (queueLock)
             {
                 var activeTasks = new List<object>();
-                var queueIndex = 0;
                 foreach (var task in tasks)
                 {
                     if (IsTerminalTask(task.Status))
@@ -86,7 +85,7 @@ namespace AutomaticDSP.Tasks
                         continue;
                     }
 
-                    activeTasks.Add(TaskSnapshot(task, queueIndex++));
+                    activeTasks.Add(TaskSnapshot(task, QueueIndexLocked(task)));
                 }
 
                 return new JsonObject
@@ -133,7 +132,7 @@ namespace AutomaticDSP.Tasks
                 foreach (var task in tasks)
                 {
                     var taskQueueIndex = -1;
-                    if (!IsTerminalTask(task.Status))
+                    if (HasInstructionWork(task))
                     {
                         taskQueueIndex = queueIndex++;
                     }
@@ -151,16 +150,7 @@ namespace AutomaticDSP.Tasks
 
         public void Update()
         {
-            lock (queueLock)
-            {
-                var task = CurrentTaskLocked();
-                if (task == null)
-                {
-                    return;
-                }
-
-                AdvanceTaskLocked(task, DateTimeOffset.UtcNow);
-            }
+            lock (queueLock) AdvanceAllTasksLocked(DateTimeOffset.UtcNow);
         }
 
         private TaskState CreateTask(TaskSubmitRequest request)
@@ -196,87 +186,17 @@ namespace AutomaticDSP.Tasks
                     throw new TaskQueueException("invalid_command", $"Duplicate command id: {commandId}");
                 }
 
-                commands.Add(new CommandState(commandId, command.Type.Trim(), command));
+                var state = new CommandState(commandId, command.Type.Trim(), command);
+                if (request.Immediate && !TaskCommandExecutor.CanExecuteImmediately(state))
+                {
+                    throw new TaskQueueException("invalid_command", "Immediate tasks only support non-waiting craft/research enqueue, queue removal, notice dismissal and trash operations.");
+                }
+                ReadDependencies(state, commands);
+                commands.Add(state);
             }
 
             var id = $"task:{nextTaskId++}";
-            return new TaskState(id, request.ClientRequestId, request.StopOnFailure ?? true, commands);
-        }
-
-        private void AdvanceTaskLocked(TaskState task, DateTimeOffset now)
-        {
-            if (task.Status == TaskQueued)
-            {
-                task.Status = TaskRunning;
-                task.StartedAt = now;
-            }
-
-            if (task.Status == TaskCancelRequested)
-            {
-                CancelCurrentCommandLocked(task, now);
-                CancelPendingCommandsLocked(task, now, task.CurrentCommandIndex + 1);
-                CompleteTaskLocked(task, TaskCancelled, now);
-                return;
-            }
-
-            if (task.CurrentCommandIndex >= task.Commands.Count)
-            {
-                CompleteTaskLocked(task, task.HadCommandFailure ? TaskFailed : TaskSucceeded, now);
-                return;
-            }
-
-            var command = task.Commands[task.CurrentCommandIndex];
-            if (command.Status == CommandPending)
-            {
-                StartCommandLocked(command, now);
-            }
-
-            if (task.Status == TaskCancelRequested)
-            {
-                CancelCurrentCommandLocked(task, now);
-                CancelPendingCommandsLocked(task, now, task.CurrentCommandIndex + 1);
-                CompleteTaskLocked(task, TaskCancelled, now);
-                return;
-            }
-
-            if (IsCommandTimedOut(command, now))
-            {
-                var timeoutResult = commandExecutor.TimeoutResult(command);
-                commandExecutor.StopCommandEffects(command);
-                FinishCommandLocked(command, CommandFailed, "timeout", "Command timed out.", now, timeoutResult);
-            }
-            else
-            {
-                commandExecutor.Execute(task, command, now);
-            }
-
-            if (!IsTerminalCommand(command.Status))
-            {
-                return;
-            }
-
-            if (command.Status == CommandCancelled)
-            {
-                CompleteTaskLocked(task, TaskCancelled, now);
-                return;
-            }
-
-            if (command.Status == CommandFailed)
-            {
-                task.HadCommandFailure = true;
-                if (task.StopOnFailure)
-                {
-                    SkipRemainingCommandsLocked(task, now);
-                    CompleteTaskLocked(task, TaskFailed, now);
-                    return;
-                }
-            }
-
-            task.CurrentCommandIndex++;
-            if (task.CurrentCommandIndex >= task.Commands.Count)
-            {
-                CompleteTaskLocked(task, task.HadCommandFailure ? TaskFailed : TaskSucceeded, now);
-            }
+            return new TaskState(id, request.ClientRequestId, request.StopOnFailure ?? true, commands) { Immediate = request.Immediate };
         }
 
         private void StartCommandLocked(CommandState command, DateTimeOffset now)
@@ -298,26 +218,6 @@ namespace AutomaticDSP.Tasks
             return now >= command.StartedAt.Value.AddSeconds(timeoutSeconds);
         }
 
-        private void CancelCurrentCommandLocked(TaskState task, DateTimeOffset now)
-        {
-            if (task.CurrentCommandIndex >= task.Commands.Count)
-            {
-                return;
-            }
-
-            var command = task.Commands[task.CurrentCommandIndex];
-            if (command.Status == CommandPending)
-            {
-                StartCommandLocked(command, now);
-            }
-
-            if (!IsTerminalCommand(command.Status))
-            {
-                commandExecutor.StopCommandEffects(command);
-                FinishCommandLocked(command, CommandCancelled, "command_cancelled", "Command cancelled.", now, null);
-            }
-        }
-
         private void FinishCommandLocked(
             CommandState command,
             string status,
@@ -332,6 +232,7 @@ namespace AutomaticDSP.Tasks
             }
 
             command.Status = status;
+            commandExecutor.ExitCommandBuildMode(command);
             command.Phase = status == CommandSucceeded ? "completed" :
                 status == CommandCancelled ? "cancelled" :
                 status == CommandSkipped ? "skipped" :
@@ -347,24 +248,6 @@ namespace AutomaticDSP.Tasks
         {
             task.Status = status;
             task.CompletedAt = now;
-        }
-
-        private void SkipRemainingCommandsLocked(TaskState task, DateTimeOffset now)
-        {
-            for (var i = task.CurrentCommandIndex + 1; i < task.Commands.Count; i++)
-            {
-                var command = task.Commands[i];
-                if (command.Status == CommandPending)
-                {
-                    FinishCommandLocked(
-                        command,
-                        CommandSkipped,
-                        "skipped_after_failure",
-                        "Command skipped after a previous command failed.",
-                        now,
-                        null);
-                }
-            }
         }
 
         private void CancelPendingCommandsLocked(TaskState task, DateTimeOffset now, int startIndex)
@@ -407,27 +290,6 @@ namespace AutomaticDSP.Tasks
             }
         }
 
-        private TaskState CurrentTaskLocked()
-        {
-            foreach (var task in tasks)
-            {
-                if (task.Status == TaskRunning || task.Status == TaskCancelRequested)
-                {
-                    return task;
-                }
-            }
-
-            foreach (var task in tasks)
-            {
-                if (task.Status == TaskQueued)
-                {
-                    return task;
-                }
-            }
-
-            return null;
-        }
-
         private TaskState FindTaskLocked(string taskId)
         {
             foreach (var task in tasks)
@@ -446,7 +308,7 @@ namespace AutomaticDSP.Tasks
             var count = 0;
             foreach (var task in tasks)
             {
-                if (!IsTerminalTask(task.Status))
+                if (HasInstructionWork(task))
                 {
                     count++;
                 }
@@ -457,10 +319,11 @@ namespace AutomaticDSP.Tasks
 
         private int QueueIndexLocked(TaskState target)
         {
+            if (!HasInstructionWork(target)) return -1;
             var queueIndex = 0;
             foreach (var task in tasks)
             {
-                if (IsTerminalTask(task.Status))
+                if (!HasInstructionWork(task))
                 {
                     continue;
                 }
@@ -488,6 +351,7 @@ namespace AutomaticDSP.Tasks
             {
                 ["id"] = task.Id,
                 ["clientRequestId"] = task.ClientRequestId,
+                ["immediate"] = task.Immediate,
                 ["status"] = task.Status,
                 ["queueIndex"] = queueIndex,
                 ["currentCommandIndex"] = task.CurrentCommandIndex,
@@ -507,6 +371,9 @@ namespace AutomaticDSP.Tasks
                 ["type"] = command.Type,
                 ["status"] = command.Status,
                 ["phase"] = command.Phase,
+                ["queue"] = CommandQueue(command),
+                ["background"] = command.Background,
+                ["dependsOn"] = command.Dependencies,
                 ["startedAt"] = command.StartedAt,
                 ["completedAt"] = command.CompletedAt,
                 ["errorCode"] = command.ErrorCode,

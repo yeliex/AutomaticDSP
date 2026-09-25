@@ -31,6 +31,11 @@ namespace AutomaticDSP.Tasks
                 case "noop":
                     ExecuteNoopLocked(command, now);
                     return;
+                case "discardinventoryitem":
+                case "pickuptrash":
+                case "cleartrash":
+                    ExecuteTrashCommand(command, now);
+                    return;
                 case "waituntil":
                     ExecuteWaitUntilLocked(command, now);
                     return;
@@ -55,8 +60,28 @@ namespace AutomaticDSP.Tasks
                 case "dismantleentity":
                     ExecuteDismantleEntityLocked(task, command, now);
                     return;
+                case "upgradeentity":
+                    ExecuteUpgradeEntityLocked(task, command, now);
+                    return;
+                case "reversebelt":
+                    ExecuteReverseBeltLocked(task, command, now);
+                    return;
+                case "setstoragelimit":
+                case "setsorterfilter":
+                case "setsplitterpriority":
+                    ExecuteLogisticsSettingLocked(task, command, now);
+                    return;
                 case "craftinventory":
                     ExecuteCraftInventoryLocked(command, now);
+                    return;
+                case "removeforgetask":
+                    ExecuteRemoveForgeTask(command, now);
+                    return;
+                case "cancelprebuild":
+                    ExecuteCancelPrebuild(command, now);
+                    return;
+                case "dismissnotice":
+                    ExecuteDismissNotice(command, now);
                     return;
                 case "researchtech":
                     ExecuteResearchTechLocked(command, now);
