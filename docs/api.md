@@ -265,6 +265,10 @@ Content-Type: application/json; charset=utf-8
 
 `POST /game/state` 可查询 `techs`、`recipes` 和 `items` 原型摘要，用于让 Agent 根据游戏数据选择科技、配方和建造物，而不是硬编码 ID。
 
+`items` 支持热值、燃料参数、`raw` 与 `prefabDesc`，`recipes` 支持基础周期与 `raw`；`cargo` 返回原生增产倍率表。`factory.objectConnections(entityId: ...)` 返回实际模型端口与原生连接记录。字段单位、完整分页、示例和限制见 [原型属性与输送连接](../skills/automatic-dsp/references/interface/prototypes-and-connections.md)。
+
+每次成功状态响应固定包含 `{"data":{...},"notifications":{"notices":[...],"goals":[...]}}`。未确认的教程、科研完成和顾问信息持续返回，由 LLM 使用 `dismissNotice` 确认并关闭；查询本身不确认，原生自行收起也不确认。当前目标随游戏原生状态更新，不通过提示确认来完成或忽略目标。详情及 `localPlanet.surface(x,y,z)` 海岸地形采样见 [提示与地形查询](../skills/automatic-dsp/references/interface/game-state.md#提示与地形查询)。
+
 ```graphql
 query FindBasicBuildTechs {
   research {
@@ -516,9 +520,9 @@ query ObserveStorage {
 
 ## POST /tasks
 
-提交一个任务到唯一顺序任务队列。任务内 `commands` 按数组顺序执行，当前命令未完成前不会开始下一条命令。任务接口不使用 GraphQL 写操作。
+默认按科研、手搓、机甲指令、建造四类通道分流。移动等机甲指令互斥；预建下达后后台等待落成，允许继续移动。垃圾操作即时执行。跨通道完成依赖用 `dependsOn` 表达，实体引用自动等待来源落成。任务接口不使用 GraphQL 写操作。
 
-当前实现为进程内唯一顺序队列；任务状态随游戏主循环推进。
+任务状态随游戏主循环推进。自动分流无需 `immediate:true`；该字段保留即时白名单校验，也支持垃圾操作。完整通道、依赖、取消与超时语义见 [游戏控制契约](../skills/automatic-dsp/references/interface/game-control.md)。
 
 请求体：
 
@@ -607,7 +611,14 @@ query ObserveStorage {
 - `entityFastFillIn`
 - `entityFastTakeOut`
 - `dismantleEntity`
+- `reverseBelt`
+- `setStorageLimit`
+- `setSorterFilter`
+- `setSplitterPriority`
 - `craftInventory`
+- `removeForgeTask`：当前制造队列 `index` 和 `recipeId`，调用原生取消及材料退款。
+- `cancelPrebuild`：当前行星正整数 `prebuildId`，在建造范围内原生拆除未建成的预建；走普通队列。
+- `dismissNotice`：按 `noticeId` 确认信息提示，并关闭仍可见的对应窗口。
 - `researchTech`
 - `buyoutTech`
 - `removeTechInQueue`
@@ -729,7 +740,7 @@ query ObserveStorage {
 
 `itemId` 表示期望获得的物品，`count` 表示期望产物数量。Mod 会使用游戏内部 `ItemProto.handcraft` 解析手搓配方，并通过 `MechaForge.TryAddTask/AddTask` 走游戏原生递归材料判定和入队逻辑。需要兼容旧调用或强制指定配方时可以传 `recipeId`；如果只传 `recipeId`，`count` 表示配方执行次数。
 
-材料不足时命令返回 `FAILED`，`errorCode` 为 `missing_item`，`result` 会包含 `ingredients`、`products` 和递归汇总后的 `missing` 列表。配方未解锁时返回 `recipe_locked`。成功时命令会等待背包中目标产物数量达到本次制造目标后再返回 `SUCCEEDED`。
+材料不足时命令返回 `FAILED`，`errorCode` 为 `missing_item`，`result` 会包含 `ingredients`、`products` 和递归汇总后的 `missing` 列表。配方未解锁时返回 `recipe_locked`。`waitForCompletion` 默认 false；true 时后台等待本次原生制造任务完成，false 时原生入队后即返回 `SUCCEEDED`，结果为 `action: enqueued, completed: false`。LLM 应优先入队并并行处理无依赖工作，仅在需要产物时等待。原生任务未完成就被移除时返回 `craft_interrupted`。
 
 `researchTech` 用于按当前存档的正常流程推进科技。它只对齐游戏原生 `GameHistoryData.EnqueueTech()`：可入队时加入科技队列，并按 `waitForUnlock` 决定是否等待游戏内机甲实验室或研究站上传 hash 后解锁。它不会调用 `BuyoutTech()`，也不会使用跨存档结转的 `PropertySystem` 元数据。
 
@@ -822,7 +833,11 @@ query ObserveStorage {
 }
 ```
 
-`placeSorter` 使用输入/输出实体建立连接。`input` 与 `output` 可直接传实体 ID，也可传对象；对象支持 `entityId`、`commandId`、`entityIndex`、`slot` 和可选 `position`。连接到传送带时可传入 belt 实体 ID；如果引用 `placeBelt` 的结果，用 `entityIndex` 选择要连接的传送带段。
+`placeSorter` 使用输入/输出实体建立连接。`input` 与 `output` 可直接传实体 ID，也可传对象；对象支持 `entityId`、`commandId`、`entityIndex`、`slot` 和可选 `position`。连接到传送带时可传入 belt 实体 ID；如果引用 `placeBelt` 的结果，用 `entityIndex` 选择要连接的传送带段。可选 `filterItemId` 在原生预建中设置筛选，省略或 0 表示不筛选，正数必须是有效物品 ID；多产物建筑应在建造时设置筛选，避免落成后误送其他产物。
+
+建筑端点按指定 `slot` 的原生姿态定位，传送带端点按带段姿态定位。可选 `position` 仅用于核对坐标（误差不超过 0.01），不能覆盖插槽位置；不匹配或插槽越界返回 `invalid_command`。建筑插槽已有连接时返回 `slot_occupied`，不会替换旧连接。外部 Agent 应通过 `factory.objectConnections` 读取插槽姿态与占用后显式选择插槽。
+
+建筑端点省略 `slot` 时默认 0，不自动选空槽。成功结果包含 `itemId`、`entityId` 和单元素 `entityIds`；分拣器的完成匹配会核对两端连接对象及显式插槽，区分同一起点的不同实体。更新后的校验不会自动修复旧存档已有的断链，仍需按实际连接执行拆建。
 
 ```json
 {
@@ -922,7 +937,7 @@ POST /tasks/task:42/cancel
 }
 ```
 
-任务队列严格顺序执行，不并行、不重排、不提前执行后续命令。
+同通道下达保持顺序，原生制造、科研、施工与机甲行动可并行。任务等待所有命令终结，不能把下达成功当作落成。
 
 ## GET /tasks/{id}
 
@@ -1025,3 +1040,33 @@ Invoke-RestMethod `
   -ContentType 'application/json' `
   -Body $body
 ```
+
+### 原生垂直堆叠
+
+`placeBuilding` 可传 `stackOnEntityId` 替代 `position`，指定当前行星上方槽位 15 空闲的已建实体。物品需与下层原生堆叠类型兼容；位置来自下层 `lapJoint`，不自动选择顶层。层数、碰撞、距离、物资和建造完成状态仍由原生流程验证。示例：`{"type":"placeBuilding","itemId":2901,"stackOnEntityId":104}`。建成后查询模式，按需调用 `setLabResearchMode` 或 `setRecipe`。
+
+### 原地升级
+
+`upgradeEntity` 接收实体目标与目标等级的 `itemId`，例如 `{"type":"upgradeEntity","entityId":175,"itemId":2012}`。仅允许同一原生升级系列中的更高等级，检查科技、机甲建造范围和升级物品后调用原生升级，保留连接；不能用于改变建筑朝向。成功结果包含 `entityId`、`previousItemId`、`itemId` 和 `nativeError`。升级后仍应检查实际连接和吞吐。
+
+`reverseBelt` 反转选中带段所属的整条原生 `CargoPath`，不是仅旋转单个带段，也不是反转整个相连网络。例如 `{"type":"reverseBelt","entityId":273}`；也支持 `target.entityId` 或 `target.commandId` / `target.entityIndex`。命令进入机甲指令队列，所选已建传送带必须位于当前行星、机甲建造范围内。沿用原生按钮限制：路径包含 2–1023 个带段，否则返回 `invalid_belt_path`。
+
+反转调用原生 `UIBeltWindow.OnReverseButtonClick`，由游戏处理带上货物、分拣器偏移和直接连接建筑的端口。无法重新插入路径的货物按原生规则返还背包，背包溢出时可能形成垃圾。分支处可能断开连接，应重新查询 `objectConnections` 和运行状态。返回 `entityId`、受影响的 `entityIds`、`previousPathId` 和 `pathId`；路径 ID 可能变化。反转不是幂等操作，再执行一次会再次反向；请求结果不确定时先查询原任务和实际连接，不要盲目重试；`clientRequestId` 仅用于关联，不提供去重。
+
+### 垃圾与退出
+
+状态响应顶层 `trash` 包含垃圾统计及前 64 个有效条目，截断时 `truncated: true`。完整列表使用查询根 `trash.entries` 分页；`trashSystem` 可读原生垃圾池。`landPlanetId` 区分落地星球，0 为漂浮；`nearPlanetId` 不代表归属。`withinPickupRange` 仅表达距离条件，不保证拾取可执行或背包可容纳。
+
+即时操作命令：`discardInventoryItem {itemId,count}` 从背包原生抛出；`pickupTrash {trashId,itemId}` 启动原生吸取，返回 `phase: pickupStarted`，应继续检查入包和溢出；`clearTrash {scope:"all"}` 永久清理全局垃圾，不返还物品。详情见 Skill 游戏控制接口。
+
+`POST /game/exit` 请求体可省略或传 `{}`，只退出，不自动保存。需要保留进度时，由调用方先调用 `/game/save` 并确认 `saved: true`；同名 `saveName` 会覆盖已有存档。退出返回接受状态后延迟调用原生 `DSPGame.ExitProgram()`，客户端需再确认进程退出。加载期间拒绝请求。存档、加载和退出优先使用 API。
+
+## 基础物流设置
+
+以下命令均支持 `entityId` 或 `target` 实体引用，要求当前行星已建实体位于机甲建造范围内，进入机甲指令队列。完成时返回实际配置；不移动或重建实体。
+
+- `{"type":"setStorageLimit","entityId":169,"maxSlots":3}`：调用 `StorageComponent.SetBans(size - maxSlots)`；maxSlots 是自动化可用格数，不是物品数量。0 禁用所有自动化格位，size 恢复全容量；超范围值拒绝，不静默截断。已有库存不删除，手动放入仍遵循原生规则。
+- `{"type":"setSorterFilter","entityId":277,"itemId":6001}`：与原生过滤器 UI 一致设置过滤物品并同步实体图标；itemId 为 0 时清除。正在搬运的物品不被删除或替换，需等待后续搬运确认实际效果。
+- `{"type":"setSplitterPriority","entityId":278,"slot":0,"priority":true}`：端口 slot 为 0–3，必须已接已建传送带；按原生 `SetPriority` 设置该方向的优先端口。输入与输出各有一组优先级。false 取消该端口的优先级（若它是当前优先端口）；取消输出优先级时会同时清除原生输出过滤器。启用时保留已有输出过滤设置。本命令不提供分流器过滤物品修改。
+
+查询 `factory.factoryStorage.storagePool { size bans }`、`factory.factorySystem.inserterPool { filter }` 和 `factory.cargoTraffic.splitterPool { inPriority outPriority input0 output0 outFilter }` 验收。分流器返回的 inputBeltId/outputBeltId 为 beltPool 组件 ID，不是实体 ID；设置端口号通过 `objectConnections` 确认。

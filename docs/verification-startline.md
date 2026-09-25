@@ -168,6 +168,6 @@ $state | ConvertTo-Json -Depth 20
 
 ## 4. 验证后续基础生产能力
 
-继续使用 `mineTarget` 采矿、`craftInventory` 手搓、`placeBuilding` / `placeBelt` / `placeSorter` / `setRecipe` 建线。基础铁块生产线示例见 `docs/examples/planetary-iron-line.md`。
+继续使用 `mineTarget` 采矿、`craftInventory` 手搓、`placeBuilding` / `placeBelt` / `placeSorter` / `setRecipe` 建线。铁块产线与后续蓝糖闭环的完成依据见 [行星内生产闭环验收](verification-production-line.md)。
 
 采矿验证应显式传入期望数量，例如 `itemId = 1001`、`count = 50`。`mineTarget` 也接受 `itemCount` 作为明确字段；`count` 是面向 Agent 的常用别名。任务结果中的 `items[].gained` 应等于本次新增数量，`remaining = 0` 表示已经达到目标数量。
