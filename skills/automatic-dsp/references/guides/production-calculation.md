@@ -6,6 +6,10 @@
 
 使用当前存档对应的物品 ID、配方投入与产出、每轮秒数、设备相对配方的速度倍率及工作功率。物品速率统一为件/游戏秒，功率为 MW；件/分钟先除以 60。原型字段的单位换算与接口缺口见 [计算数据接入](../interface/game-state.md#产线计算数据接入)。记录数据版本、来源和人工假设，方便更换配方或设备后重算。
 
+可将查询响应保存为 JSON，使用 `node scripts/prototype-to-recipe.mjs 快照.json 配方ID 设备物品ID 目标物品ID 每秒目标量` 输出 `production-calc.mjs recipe` 的输入。快照需包含配方的 `id type unlocked timeSeconds items results`，以及设备物品的 `id unlocked prefabDesc`；描述中选择 `isAssembler assemblerRecipeType assemblerSpeedMultiplier isLab labSpeedMultiplier workPowerW`。脚本保留所有投入与产物，拒绝特殊加工，不自动附加增产。
+
+目录按页读取并按 ID 建立产物到配方的本地索引；连接游戏或切换存档后按需重读，解锁、库存和实例状态每次规划时重读。完整查询契约见 [原型与连接](../interface/prototypes-and-connections.md)。
+
 计算前确定边界：哪些物品现场制造，哪些外部输入；原有产能中有多少已被其他产线占用；优化目标是尽快投产、节矿、节电、少建筑还是少占地。已有供应按稳定可分配余量抵扣，库存另算可维持时间。
 
 ## 普通制造公式与取整
@@ -37,6 +41,8 @@
 普通制造中，额外产出模式提高每轮产物数量，加速模式提高每秒执行轮数。相同目标下，额外产出降低原料需求；加速主要减少本工序机器数量。按配方支持的模式和实际输入喷涂状态取倍率。所有必要原料达到对应喷涂等级时才按完整加成估算；混合喷涂输入需按实际有效效果核算。
 
 以下为基础游戏的增产剂参数，模组或版本调整时采用当前游戏数据：
+
+优先查询 `cargo { incTableMilli accTableMilli powerTableRatio }` 获取当前倍率；数组按喷涂点数索引。喷涂次数和具体用途仍从物品原型与对应系统核实，不能把下表固定值覆盖到不同 Mod 的数据上。
 
 | 增产剂 | 额外产出倍率 y | 加速倍率 a | 工作耗电倍率 | 基础喷涂次数 | 同级自喷后次数 |
 | --- | --- | --- | --- | --- | --- |
