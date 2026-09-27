@@ -67,6 +67,11 @@ namespace AutomaticDSP.Tasks
                 case "transferstorageitem":
                     ExecuteTransferStorageItemLocked(task, command, now);
                     return;
+                case "setdeliveryslot":
+                case "setdeliveryenabled":
+                case "transferinventoryitem":
+                    ExecuteDeliveryCommand(command, now);
+                    return;
                 case "dismantleentity":
                     ExecuteDismantleEntityLocked(task, command, now);
                     return;
@@ -79,6 +84,11 @@ namespace AutomaticDSP.Tasks
                 case "setstoragelimit":
                 case "setsorterfilter":
                 case "setsplitterpriority":
+                case "setstationstorage":
+                case "setstationvehicles":
+                case "transferstationitem":
+                case "setdispenser":
+                case "setdispensercouriers":
                     ExecuteLogisticsSettingLocked(task, command, now);
                     return;
                 case "craftinventory":

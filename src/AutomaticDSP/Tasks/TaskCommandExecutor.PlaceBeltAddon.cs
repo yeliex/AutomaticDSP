@@ -7,18 +7,30 @@ namespace AutomaticDSP.Tasks
 {
     internal sealed partial class TaskCommandExecutor
     {
-        private void ExecutePlaceBeltAddonLocked(CommandState command, Player player, PlanetFactory factory,
+        private void ExecutePlaceAddonLocked(CommandState command, Player player, PlanetFactory factory,
             ItemProto item, Vector3 position, float yaw, int stackOnEntityId, DateTimeOffset now)
         {
+            var storageAddon = item.prefabDesc.addonType == EAddonType.Storage;
+            if (storageAddon && stackOnEntityId == 0)
+            {
+                finishCommand(command, CommandFailed, "invalid_command", "物流配送器需要 stackOnEntityId 指定最上层储物仓。", now, null);
+                return;
+            }
             if (stackOnEntityId != 0)
             {
-                if (!item.prefabDesc.multiLevel || !TryGetEntity(factory, stackOnEntityId, out var baseEntity) ||
-                    baseEntity.protoId != item.ID)
+                if (!TryGetEntity(factory, stackOnEntityId, out var baseEntity) ||
+                    (storageAddon ? baseEntity.storageId <= 0 || LDB.items.Select(baseEntity.protoId).prefabDesc.isBattleBase :
+                        !item.prefabDesc.multiLevel || baseEntity.protoId != item.ID))
                 {
                     finishCommand(command, CommandFailed, "invalid_command", "Addon stacking requires an existing matching stackable entity.", now, null);
                     return;
                 }
                 if (!TryEnsureObjectSlotAvailable(factory, stackOnEntityId, 15, out var error))
+                {
+                    finishCommand(command, CommandFailed, "slot_occupied", error, now, null);
+                    return;
+                }
+                if (storageAddon && !TryEnsureObjectSlotAvailable(factory, stackOnEntityId, 13, out error))
                 {
                     finishCommand(command, CommandFailed, "slot_occupied", error, now, null);
                     return;
@@ -56,12 +68,15 @@ namespace AutomaticDSP.Tasks
                 tool.DeterminePreviews();
                 var preview = tool.buildPreviews[0];
                 tool.ActiveColliders();
-                tool.FindPotentialBelt(0);
-                tool.SnapToBelt(0);
-                tool.SnapToBeltAutoAdjust(0);
-                tool.ResetBeltSearch();
-                tool.ActiveColliders();
-                tool.FindPotentialBeltStrict(0);
+                if (!storageAddon)
+                {
+                    tool.FindPotentialBelt(0);
+                    tool.SnapToBelt(0);
+                    tool.SnapToBeltAutoAdjust(0);
+                    tool.ResetBeltSearch();
+                    tool.ActiveColliders();
+                    tool.FindPotentialBeltStrict(0);
+                }
                 if (!IsWithinCommandIssueRange(player, preview.lpos, out distance, out range))
                 {
                     finishCommand(command, CommandFailed, "out_of_range", "Snapped addon is outside command issue range.", now,

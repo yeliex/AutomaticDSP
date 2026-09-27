@@ -163,6 +163,31 @@ namespace AutomaticDSP.Tasks
                     return;
                 }
 
+                var stationId = startEndpoint?.EntityId > 0 ? factory.entityPool[startEndpoint.EntityId].stationId : 0;
+                var station = stationId > 0 ? factory.transport.stationPool[stationId] : null;
+                var filterIndex = 0;
+                var hasFilter = TryGetToken(command, "filterItemId", out _);
+                if ((station != null && !hasFilter) || (hasFilter && (station == null || station.isCollector ||
+                    startEndpoint.Slot < 0 || startEndpoint.Slot >= station.slots.Length ||
+                    !TryGetInt(command, "filterItemId", out var requestedFilter) || requestedFilter < 0)))
+                {
+                    finishCommand(command, CommandFailed, "invalid_filter", "运输站输出带创建时必须指定 filterItemId；其他连接不接受该过滤字段。", now, null);
+                    return;
+                }
+                if (station != null)
+                {
+                    var filter = GetInt(command, "filterItemId", 0);
+                    for (var i = 0; i < station.storage.Length; i++)
+                        if (filter > 0 && station.storage[i].itemId == filter) filterIndex = i + 1;
+                    if (filterIndex == 0 && filter == 1210 && station.isStellar && GameMain.history.logisticShipWarpDrive)
+                        filterIndex = 6;
+                    if (filter > 0 && filterIndex == 0)
+                    {
+                        finishCommand(command, CommandFailed, "invalid_filter", "过滤物品必须对应运输站货槽或已解锁的翘曲器出口。", now, null);
+                        return;
+                    }
+                }
+
                 // 原生物理查询依赖附近碰撞体已激活，否则可能漏掉交叉处的已有带段。
                 foreach (var preview in tool.buildPreviews)
                 {
@@ -193,7 +218,15 @@ namespace AutomaticDSP.Tasks
                 }
 
                 command.Phase = "creatingPrebuild";
-                tool.CreatePrebuilds();
+                var previousFilter = station == null ? 0 : station.slots[startEndpoint.Slot].storageIdx;
+                // 对齐 UIBeltBuildTip.SetFilterToEntity：原生连接建成前就已确定输出货槽。
+                if (station != null) station.slots[startEndpoint.Slot].storageIdx = filterIndex;
+                try { tool.CreatePrebuilds(); }
+                finally
+                {
+                    if (station != null && tool.buildPreviews[0].objId == 0)
+                        station.slots[startEndpoint.Slot].storageIdx = previousFilter;
+                }
 
                 var targets = new List<BuildWaitTarget>();
                 foreach (var preview in tool.buildPreviews)

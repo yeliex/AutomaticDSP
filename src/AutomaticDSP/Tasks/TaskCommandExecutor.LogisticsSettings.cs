@@ -40,6 +40,17 @@ namespace AutomaticDSP.Tasks
                 return;
             }
 
+            if (command.NormalizedType == "setdispenser" || command.NormalizedType == "setdispensercouriers")
+            {
+                ExecuteDispenserSetting(command, player, factory, entity, now);
+                return;
+            }
+            if (command.NormalizedType == "setstationstorage" || command.NormalizedType == "setstationvehicles" ||
+                command.NormalizedType == "transferstationitem")
+            {
+                ExecuteStationSetting(command, player, factory, entity, now);
+                return;
+            }
             JsonObject result;
             switch (command.NormalizedType)
             {

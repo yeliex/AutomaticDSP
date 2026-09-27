@@ -77,9 +77,9 @@ namespace AutomaticDSP.Tasks
             }
 
             var yaw = (float)GetDouble(command, "rotation", 0);
-            if (desc.addonType == EAddonType.Belt)
+            if (desc.addonType == EAddonType.Belt || desc.addonType == EAddonType.Storage)
             {
-                ExecutePlaceBeltAddonLocked(command, player, factory, item, position, yaw, stackOnEntityId, now);
+                ExecutePlaceAddonLocked(command, player, factory, item, position, yaw, stackOnEntityId, now);
                 return;
             }
             var veinMiningBuilding = IsVeinMiningBuilding(desc);
@@ -87,6 +87,9 @@ namespace AutomaticDSP.Tasks
                 ? position.normalized * (factory.planet.realRadius + 0.2f)
                 : factory.planet.aux.Snap(position, onTerrain: true));
             var rotation = stackOnEntityId != 0 ? Quaternion.identity : Maths.SphericalRotation(snappedPosition, yaw);
+            // 原生气态星建造预览在地表网格之上增加半径的 2.5%。
+            if (factory.planet.type == EPlanetType.Gas)
+                snappedPosition += snappedPosition.normalized * factory.planet.realRadius * 0.025f;
             if (stackOnEntityId != 0)
             {
                 if (!desc.multiLevel || stackOnEntityId < 1 || stackOnEntityId >= factory.entityCursor ||
@@ -166,6 +169,7 @@ namespace AutomaticDSP.Tasks
                 tool.handItem = item;
                 tool.handPrefabDesc = desc;
                 tool.yaw = yaw;
+                tool.cursorTarget = snappedPosition;
                 tool.buildPreviews.Clear();
 
                 var preview = new BuildPreview();

@@ -646,7 +646,7 @@ namespace AutomaticDSP.Tasks
 
             player.ClearOrders();
             command.Phase = "dismantling";
-            var before = StorageItemCounts(player.package);
+            var before = PlayerItemCounts(player);
             var summary = EntitySummary(entityId, entity);
             var dismantled = actionBuild.DoDismantleObject(entityId);
             if (!dismantled)
@@ -655,7 +655,7 @@ namespace AutomaticDSP.Tasks
                 return;
             }
 
-            var after = StorageItemCounts(player.package);
+            var after = PlayerItemCounts(player);
             var returnedItems = PositiveItemDeltas(before, after);
             finishCommand(
                 command,
