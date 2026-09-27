@@ -16,6 +16,7 @@ namespace AutomaticDSP.Tasks
 
         public void StopCommandEffects(CommandState command)
         {
+            command.Flight?.Dispose();
             if (!command.OwnsPlayerOrders) return;
             switch (command.NormalizedType)
             {

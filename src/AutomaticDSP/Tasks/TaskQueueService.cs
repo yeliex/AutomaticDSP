@@ -232,6 +232,11 @@ namespace AutomaticDSP.Tasks
             }
 
             command.Status = status;
+            if (command.Flight != null)
+            {
+                command.Flight.Dispose();
+                result = TaskCommandExecutor.FlightResult(command.Flight);
+            }
             commandExecutor.ExitCommandBuildMode(command);
             command.Phase = status == CommandSucceeded ? "completed" :
                 status == CommandCancelled ? "cancelled" :

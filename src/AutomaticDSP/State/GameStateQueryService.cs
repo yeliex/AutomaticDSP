@@ -595,7 +595,7 @@ namespace AutomaticDSP.State
                         continue;
                     }
 
-                    result[field.Name] = SerializeOneLevelMemberValue(field.GetValue(source));
+                    result[field.Name] = IsResourceMemberRestricted(source, field.Name) ? null : SerializeOneLevelMemberValue(field.GetValue(source));
                 }
                 catch
                 {
@@ -622,7 +622,7 @@ namespace AutomaticDSP.State
                         continue;
                     }
 
-                    result[property.Name] = SerializeOneLevelMemberValue(property.GetValue(source, null));
+                    result[property.Name] = IsResourceMemberRestricted(source, property.Name) ? null : SerializeOneLevelMemberValue(property.GetValue(source, null));
                 }
                 catch
                 {
@@ -721,6 +721,14 @@ namespace AutomaticDSP.State
                     result.Add(descriptor);
                 }
             }
+            if (source is Player)
+            {
+                result.Add(new JsonObject
+                {
+                    ["name"] = "flight", ["kind"] = "object", ["type"] = "FlightState",
+                    ["description"] = "原生移动模式、接地状态、局部/宇宙坐标及推进器能源状态。"
+                });
+            }
             if (source is PlanetFactory)
             {
                 result.Add(new JsonObject
@@ -732,6 +740,11 @@ namespace AutomaticDSP.State
 
             if (source is PlanetData)
             {
+                result.Add(new JsonObject
+                {
+                    ["name"] = "resources", ["kind"] = "object", ["type"] = "PlanetResources",
+                    ["description"] = "按原生探索权限扫描与汇总矿物；unknown、scanning 不返回零矿量。"
+                });
                 result.Add(new JsonObject
                 {
                     ["name"] = "surface", ["kind"] = "object", ["type"] = "SurfaceSample",
@@ -1063,6 +1076,21 @@ namespace AutomaticDSP.State
 
         private static bool TryGetQueryableMemberValue(object target, string name, out object value)
         {
+            if (target is Player flightPlayer && name == "flight")
+            {
+                value = CaptureFlightState(flightPlayer);
+                return true;
+            }
+            if (IsResourceMemberRestricted(target, name))
+            {
+                value = null;
+                return false;
+            }
+            if (target is PlanetData resourcePlanet && name == "resources")
+            {
+                value = CapturePlanetResources(resourcePlanet);
+                return true;
+            }
             if (target == null)
             {
                 value = null;
@@ -2539,6 +2567,8 @@ namespace AutomaticDSP.State
                     ["inQueue"] = history != null && history.TechInQueue(tech.ID),
                     ["canEnqueue"] = history != null && history.CanEnqueueTech(tech.ID),
                     ["preTechs"] = IntArray(tech.PreTechs, 64, false),
+                    ["preTechsImplicit"] = IntArray(tech.PreTechsImplicit, 64, false),
+                    ["preTechsMax"] = tech.PreTechsMax,
                     ["preItems"] = IntArray(tech.PreItem, 64, false),
                     ["items"] = TechPrototypeItems(tech),
                     ["unlockRecipes"] = IntArray(tech.UnlockRecipes, 128, false),
@@ -2885,8 +2915,8 @@ namespace AutomaticDSP.State
                     ["themeName"] = ThemeName(MemberInt(planet, 0, "theme")),
                     ["algoId"] = MemberInt(planet, 0, "algoId"),
                     ["style"] = MemberInt(planet, 0, "style"),
-                    ["seed"] = MemberInt(planet, 0, "seed"),
-                    ["infoSeed"] = MemberInt(planet, 0, "infoSeed"),
+                    ["seed"] = null,
+                    ["infoSeed"] = null,
                     ["radius"] = MemberDouble(planet, 0, "radius"),
                     ["realRadius"] = MemberDouble(planet, 0, "realRadius"),
                     ["orbitRadius"] = MemberDouble(planet, 0, "orbitRadius"),
@@ -2911,9 +2941,9 @@ namespace AutomaticDSP.State
                     ["uPosition"] = VectorOrNull(MemberValue(planet, "uPosition")),
                     ["runtimePosition"] = VectorOrNull(MemberValue(planet, "runtimePosition")),
                     ["birthPoint"] = VectorOrNull(MemberValue(planet, "birthPoint")),
-                    ["veinGroupCount"] = CountOf(MemberValue(planet, "runtimeVeinGroups", "veinGroups")),
-                    ["veins"] = PlanetVeinGroups(planet),
-                    ["gasItems"] = GasItems(planet)
+                    ["veinGroupCount"] = planet is PlanetData pd && CanObserveResources(pd) && pd.scanned ? (object)CountOf(MemberValue(planet, "runtimeVeinGroups", "veinGroups")) : null,
+                    ["veins"] = planet is PlanetData vp && CanObserveResources(vp) && vp.scanned ? PlanetVeinGroups(planet) : null,
+                    ["gasItems"] = planet is PlanetData gp && CanObserveResources(gp) ? GasItems(planet) : null
                 });
             }
 

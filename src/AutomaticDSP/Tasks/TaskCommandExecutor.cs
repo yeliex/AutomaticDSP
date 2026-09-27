@@ -28,6 +28,16 @@ namespace AutomaticDSP.Tasks
         {
             switch (command.NormalizedType)
             {
+                case "navigateto":
+                    ExecuteNavigateTo(command, now);
+                    return;
+                case "takeoff":
+                case "land":
+                case "flightinput":
+                case "warp":
+                case "exitwarp":
+                    ExecuteFlight(command, now);
+                    return;
                 case "noop":
                     ExecuteNoopLocked(command, now);
                     return;

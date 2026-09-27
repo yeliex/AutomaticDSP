@@ -54,6 +54,8 @@ namespace AutomaticDSP.Tasks
 
         public bool ActionIssued { get; set; }
 
+        public FlightInput Flight { get; set; }
+
         public int TargetId { get; set; }
 
         public EObjectType MineObjectType { get; set; }
