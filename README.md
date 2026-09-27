@@ -4,17 +4,13 @@
 
 AutomaticDSP 是一个用于《戴森球计划》的自动化控制 Mod，目标是让外部 AI Agent 能够通过本地接口查询游戏状态，并顺序提交游戏内任务。
 
-当前仓库包含方案文档、BepInEx 工程骨架和 M1 只读状态观测实现：
+当前仓库包含 Mod 实现、接口文档和 Agent skill：
 
-- 需求文档：`docs/requirements.md`
-- 技术方案：`docs/technical-design.md`
-- 开发计划：`docs/development-plan.md`
 - API 文档：`docs/api.md`
 - 查询语法：`docs/query-syntax.md`
 - AI Agent 开局流程：`docs/ai-agent-getting-started.md`
 - AI Agent skill：[AutomaticDSP](skills/automatic-dsp/SKILL.md)（游戏机制、规划提示与接口参考分开维护）
-- 开局闭环验证：`docs/verification-startline.md`
-- BepInEx 工程骨架：`src/AutomaticDSP`
+- Mod 源码：`src/AutomaticDSP`
 
 ## 安装 AI Agent skill
 

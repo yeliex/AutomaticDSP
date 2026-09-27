@@ -4,17 +4,13 @@
 
 AutomaticDSP is an automation mod for *Dyson Sphere Program*. It enables external AI agents to query game state through a local API and submit in-game tasks for sequential execution.
 
-This repository currently includes design documents, a BepInEx project scaffold, and the M1 implementation for read-only game state observation:
+This repository includes the mod implementation, API documentation, and agent skill:
 
-- Requirements: [docs/requirements.md](docs/requirements.md)
-- Technical design: [docs/technical-design.md](docs/technical-design.md)
-- Development plan: [docs/development-plan.md](docs/development-plan.md)
 - API documentation: [docs/api.md](docs/api.md)
 - Query syntax: [docs/query-syntax.md](docs/query-syntax.md)
 - Getting started with an AI agent: [docs/ai-agent-getting-started.md](docs/ai-agent-getting-started.md)
 - AI agent skill: [AutomaticDSP](skills/automatic-dsp/SKILL.md), covering gameplay, planning guidance, and separately maintained API references
-- Starter production line verification: [docs/verification-startline.md](docs/verification-startline.md)
-- BepInEx project scaffold: [src/AutomaticDSP](src/AutomaticDSP)
+- Mod source: [src/AutomaticDSP](src/AutomaticDSP)
 
 The linked documentation and skill are currently written in Simplified Chinese.
 
