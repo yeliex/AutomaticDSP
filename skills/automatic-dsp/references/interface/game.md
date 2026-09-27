@@ -1,6 +1,6 @@
 # 游戏管理接口
 
-存档、新建、加载和退出均优先使用 Mod 接口，不通过 Computer Use 操作菜单。启动游戏使用 Steam 命令，见初始化指南。
+存档、新建、加载和退出均使用 Mod 接口，不通过 Computer Use 操作菜单。启动游戏使用 Steam 命令，见初始化指南。
 
 ## POST /game/exit：退出程序
 

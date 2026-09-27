@@ -204,7 +204,7 @@ HTTP 层错误常用 `{"error":{"code":"...","message":"..."}}`；执行失败�
 
 ## 可用操作
 
-当前命令覆盖行星内基础操作。跨行星航行、物流站配置、蓝图应用、戴森球编辑，以及射线接收/发射目标/增产模式、战斗和地形改造的专用控制接口待支持。规划涉及这些操作时，可先完成材料与产线准备，并记录待执行部分。
+当前命令覆盖行星内基础操作、飞行导航、运输站配置、物流配送器和物流背包操作。蓝图应用、戴森球编辑，以及射线接收/发射目标/增产模式、战斗和地形改造的专用控制接口待支持。规划涉及这些操作时，可先完成材料与产线准备，并记录待执行部分。
 
 下列命令对象放入 `POST /tasks` 的 `commands` 数组。可加 `id` 和 `timeoutSeconds`。示例数字仅用于说明格式，执行前必须替换为当前数据。
 
@@ -253,9 +253,36 @@ HTTP 层错误常用 `{"error":{"code":"...","message":"..."}}`；执行失败�
 
 快速取放由原生逻辑决定物品与数量；储物实体的指定物品取放使用 `transferStorageItem`。该命令移动数量大于零即可成功，实际数量读取 `movedCount`；没有转移时返回 `no_item_transferred`。
 
+普通运输站的 `entityFastFillIn` 会补充运输工具，不能视为指定货槽投料。传送带可用 `fromPackage:false` 放入手中真实物品，原生单次投入数量读取 `movedCount`。输入站端口的 `storageIdx` 可能随接收物品更新，它是原生货槽缓存，不是用户设置的输入过滤。
+
 `craftInventory` 使用原生递归材料判定，缺料返回 `missing_item` 和 `missing` 列表，未解锁返回 `recipe_locked`。`waitForCompletion` 默认 false，成功仅表示原生入队，结果为 `action: enqueued, completed: false`。设为 true 时后台跟踪本次原生制造任务剩余次数，制造完成后成功；不以背包净增判断，避免产物被并行操作消耗导致误报。等待结果含 `remainingCount`、`forgeTotalTime`；原生任务在未完成时被移除返回 `craft_interrupted`。
 
 `removeForgeTask` 按执行时的队列校验索引和配方；即使配方相同也应在移除前刷新数量、父子关系和进度。取消子任务可能连带取消父任务及后续缺料任务，退款遵守原生背包容量及掉落规则。移除后重读整个 `forge.tasks`，不能继续沿用旧索引。
+
+## 飞行与导航
+
+飞行命令占用机甲指令通道，科研与手搓仍可并行。Agent 选择目的地并准备能源；`navigateTo` 自动控制航向、加减速和着陆，使用 `flightInput` 时则需自行计算输入方向和持续时间。
+
+| 命令 | 参数 | 完成依据 |
+| --- | --- | --- |
+| `takeOff` | 可选 durationTicks，默认 600 | 原生双跳输入后进入 Fly |
+| `navigateTo` | 三选一：planetId（可附局部 position）、当前星球 position、太空双精度 uPosition；可选布尔值 useWarp（默认 false）、tolerance（星球 0.5–10 m，默认 3；太空 0.5–100 m，默认 20）、timeoutSeconds（默认 900） | 航行闭环；固态星实际接地、气态星在指定表面位置上方稳定悬停、太空进入距离容差即记录到达（含逐 tick 轨迹穿越），退出曲速后成功，不要求停车；Sail 自动解锁光标，Tab 可接管 |
+| `land` | 可选 durationTicks，默认 600；仅接受 Fly 状态 | 原生下降后进入 Walk 且接地；气态行星拒绝 |
+| `flightInput` | 必填 mode 为 fly/sail、direction 向量、durationTicks（1–3600）；thrust 默认 0，范围 -1..1；lift 默认 0，范围 -1..1；boost 默认 false | 输入持续指定游戏 tick，或原生移动模式发生转换；成功不代表抵达目的地 |
+| `warp` | 可选 durationTicks，默认 600 | 原生曲速按键入口后 warpCommand 和 warping 均为真 |
+| `exitWarp` | 可选 durationTicks，默认 600 | 原生退出后 warpCommand 和 warping 均为假 |
+
+`navigateTo.useWarp=true` 允许在距离、航向、科技、能量和翘曲器满足条件时自动启动曲速，接近目标时退出；不可用时继续普通航行。结果 `useWarp` 表示请求选项，`warpUsed` / `warpStatus` 表示实际使用情况；直接 `warp` 命令不满足前置条件时会失败。
+
+`arrivalDistance` 记录太空点首次判定到达时的最近距离，尚未到达或目标为行星时为 null。`distanceToTarget` 是终态实际距离，可能因退出曲速的惯性超过 tolerance。
+
+fly 的 direction 是本行星局部方向，水平输入投影到当前位置切平面，lift 为升降输入；sail 的 direction 是宇宙方向单位向量，thrust=1 转向该方向，-1 执行原生制动，0 松开推进键（中间值仍受原生输入阈值控制），boost 对应航行加速键。它们都不是目标位置。fly 持续上升并水平移动可以在原生推进器等级满足时进入 Sail；sail 接近地表后的模式转换仍由原生处理。进入 Fly 后再调用 land。
+
+`moveTo` 使用本行星局部坐标。宇宙位置与速度查询 `player.uPosition` / `player.uVelocity`，坐标分量保持双精度；目标行星的 `uPosition` 随游戏时间变化。按目标类型核对上表中的完成条件。
+
+取消、超时或命令结束仅撤销本命令输入，不停速、不强制降落、不自动退出曲速。终态 result 返回真实 movementState、planetId、局部与宇宙位置、宇宙速度、warpCommand、warpState、coreEnergy 及 appliedTicks。键盘移动、曲速/加速键、原生移动订单、导航或建造接管会中止输入并返回 manual_override。默认输入租期为 120 秒，显式 timeoutSeconds 可覆盖。
+
+科技不足为 tech_locked；能源不足为 insufficient_energy；曲速缺翘曲器为 missing_warper。曲速入口由原生耗能和消费方法执行，自动补充遵守原有设置。拒绝前置条件不会主动消耗翘曲器。正常运行中的产线、手搓、燃烧室仍可能改变能量与库存。
 
 ## 研究
 
@@ -267,7 +294,7 @@ HTTP 层错误常用 `{"error":{"code":"...","message":"..."}}`；执行失败�
 | `setLabResearchMode` | 实体目标；可选 `techId`，默认当前研究科技 | 设置矩阵研究站研究模式，并同步相邻研究站函数 |
 | `setRecipe` | 实体目标、`recipeId` | 对支持配方的制造组件或研究站设配方；研究站用于矩阵生产模式 |
 
-`waitForUnlock: false` 成功表示已入队或已经解锁，读取 `unlocked`、`inQueue` 区分。研究期间仍需执行补给或建设时，使用此选项让任务队列继续，之后单独观察解锁进度。
+`waitForUnlock: false` 成功表示已入队或已经解锁，读取 `unlocked`、`inQueue` 区分。`true` 在后台等待原生解锁，也不占用机甲指令通道；只有显式依赖该命令的操作等待研究完成。
 
 `researchTech` 使用当前存档的正常研究流程，返回 `usesMetadata: false`；`buyoutTech` 返回 true，其 `metadataBuyoutCost` 表示跨存档元数据需求。
 
@@ -284,6 +311,8 @@ HTTP 层错误常用 `{"error":{"code":"...","message":"..."}}`；执行失败�
 | `reverseBelt` | 实体目标；反转所属整条原生运输路径，所选带段须在建造范围内 |
 | `setStorageLimit` | 储物仓实体目标、`maxSlots`（0 到实际 size），限制自动化可用格数 |
 | `setSorterFilter` | 分拣器实体目标、物品 `itemId`；0 清除过滤 |
+| `setStationStorage` | 普通运输站实体目标、零起始 `storageIndex`、`itemId`（0 清空）；可选 `max`（默认科技允许容量）、`localLogic` / `remoteLogic`（None / Supply / Demand，默认 None） |
+| `setStationVehicles` | 普通运输站实体目标、`itemId`（5001 无人机 / 5002 运输船）、目标总数 `count`；计入正在工作的工具，实际从背包放入或将闲置工具取回 |
 | `setSplitterPriority` | 四向分流器实体目标、端口 `slot`（0–3）、布尔值 `priority` |
 | `upgradeEntity` | 实体目标、目标等级物品 `itemId`；在机甲建造范围内原地升级 |
 | `cancelPrebuild` | 正整数 `prebuildId`；可选当前 `planetId` | 在建造范围内调用原生预建拆除和退款；需先取消等待该预建的 Mod 任务，刷新 `factory.prebuildPool` 后提交 |
@@ -327,8 +356,29 @@ Agent 提供路径，Mod 按相邻点进行原生吸附和预览。下发后检�
 
 `dismissNotice` 需要 `notifications.notices` 或 `ui.notices` 中条目的 `noticeId`。确认该记录；仍可见且身份未变化时，在主线程调用对应原生关闭方法，已自行收起则仅确认记录。同一记录重复确认成功；记录不存在或已切换对局返回 `notice_not_found`。支持即时通道。读取状态不会确认提示，未确认消息每次查询都会返回，由 LLM 理解后及时关闭。不会自动确认错误、存档或其他决策对话框，也不会把游戏目标标记为完成或忽略。详情见 [提示与地形查询](game-state.md#提示与地形查询)。
 
-## 等待与调试
-
-`waitUntil` 的全部条件及作用范围见 [等待](#等待)。`noop` 用于调试。
+## 物流设置
 
 基础物流设置使用 `setStorageLimit`、`setSorterFilter`、`setSplitterPriority`，都在机甲指令队列执行并要求选中实体在建造范围内。仓储 `maxSlots` 限制自动化格位数量，0 禁止自动化存入、size 解除限制，不会清除超限库存；不要把格数当作物品数。分拣器 `itemId:0` 清除过滤，修改不会丢弃正在搬运的货物。分流器 `slot` 为 objectConnections 的 0–3 端口，必须已连接已建传送带；`priority:true/false` 设置或取消该端口优先级，输入和输出独立。取消输出优先级也会按原生规则清除输出过滤。设置后查询 size/bans、inserter.filter 或 splitter.inPriority/outPriority/input0/output0/outFilter，再观察实际供料；不要仅凭命令成功认定堵料已经解决。
+
+运输站设置同样要求当前星球与建造范围。`setStationStorage` 复用原生货槽设置：禁止重复物品，普通行星站不支持远程物流；替换货物按原生规则退回背包，放不下时形成垃圾。`setStationVehicles` 不召回忙碌中的工具，缺少物品时失败；取回按原生顺序进入普通背包、已配置物流格、手中，结果 count 是扣除全部返还后的站内总数，inventoryCount/deliveryCount/handCount 分别反映去向。原生返还可能抛出原先手中物品，应先处理手中库存并核对垃圾。轨道采集器固定货槽不接受普通运输站设置命令。
+
+## 配送器、物流背包与指定转移
+
+以下设置和转移走 instruction 通道，不等待手搓或科研；建筑目标仍须在当前星球和建造范围内。物流背包开关只控制自动配送，关闭后仍可手动转移。
+
+| 命令 | 参数与语义 |
+| --- | --- |
+| `setDeliveryEnabled` | 必填布尔值 enabled；要求物流背包已解锁 |
+| `setDeliverySlot` | 必填原生零起始 index、itemId（0 清空）；可选 requireCount、recycleCount。同物品省略阈值时保留，更换时默认 0/2147483647；换物品前必须取空，不允许重复物品 |
+| `transferInventoryItem` | from/to 为 package、delivery、hand 中不同两项；itemId、正整数 count。只向指定库存转移，不自动改投其他背包；目标未接收部分及增产点退回来源 |
+| `setDispenser` | 配送器实体目标；可选 itemId、playerMode（None/Supply/Recycle/Both）、storageMode（None/Supply/Demand），省略保留。itemId=-1 表示全部回收，仅允许 playerMode=Recycle、storageMode=None |
+| `setDispenserCouriers` | 配送器实体目标、目标机器人总数 count；含工作中机器人，不能取回工作中的部分。投入来自普通背包，取回使用原生背包/物流格/手中返还 |
+| `transferStationItem` | 普通运输站实体目标、已配置 itemId、正整数 count；direction=fromStation/toStation（默认前者），inventory=package/delivery/hand（默认 package）。手动存入容量按科技允许容量，货槽 max 是物流阈值 |
+
+转移结果读取 movedCount：有部分转移即可成功，零转移为 no_item_transferred；数量与增产点均保留。目标手中有其他物品时不会覆盖。普通背包、物流背包、手中分别对应真实库存，手中物品还可能被后续原生输入处理，需要连续操作时放在同一有序任务中。
+
+物流格并非从 0 连续开放；查询已解锁格位后使用其 index。阈值是原生半堆步长（奇数堆为整堆），有限值最多 30 堆，2147483647 表示无限，requireCount 不得大于 recycleCount。替换非空格返回 storage_not_empty，重复物品返回 duplicate_item。机甲补货/回收按原生库存统计和阈值执行。
+
+配送器使用 `placeBuilding {itemId:2107,stackOnEntityId:<顶层箱子>}`；不传猜测高度。普通箱子端口 15 和配送器端口 13 需符合原生连接规则。已有配送器的箱子再叠箱，原生会抬升配送器并重新连接新顶层；随后查询 dispenser.storageId 确认。物品供需匹配、供货箱选择、范围限制及机器人调度均由游戏处理；设置成功不等于已完成运输，需检查电力、pairCount、工作机器人及实际库存变化。
+
+从运输站输出的 `placeBelt` 必须在同一命令提供 `filterItemId`，选择已配置货槽中的物品；0 表示不选择输出物品。星际站已解锁运输船曲速时也可选 1210。该字段在创建预建前写入原生输出端口，带段建成前过滤已经生效；其他类型的连接不接受此字段。输入运输站的传送带由原生货槽需求接收，不支持独立物品过滤。通过 start / end 的实体与端口指定输入输出方向。

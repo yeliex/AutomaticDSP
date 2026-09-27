@@ -53,6 +53,31 @@ HTTP 200 返回 `data`，结构对应请求的字段或别名；同时固定附�
 
 ## 请求及字段发现
 
+### 行星资源与探索权限
+
+`player.flight` 返回原生移动模式、planetId / localPlanetId、grounded、局部 position / localVelocity、双精度 uPosition / uVelocity、radialAltitude（离开本地行星后为 null）、warpCommand / warpState，以及推进器、储能、reactorPowerGen、航行速度和翘曲器状态。cursorLocked 表示当前光标实际锁定状态，disableLockCursor 表示原生航行 UI 已关闭自动锁定。径向高度以行星 realRadius 为基准，不能代替地形接地判断；宇宙速度包含行星运动，不能当作相对地面速度。
+
+科技摘要 `techs` 同时提供 `preTechs`、`preTechsImplicit` 与 `preTechsMax`；材料充足不代表可入队，需检查显式、隐含前置与原生 canEnqueue。不要使用元数据买断代替正常研究。
+
+通过原始行星对象查询 `resources`，例如：
+
+```graphql
+{
+  history { universeObserveLevel }
+  localStar { planets { id displayName uPosition resources {
+    observable requiredObserveLevel observeLevel status scanned
+    minerals { typeId itemId amount count } waterItemId gasItems gasSpeeds
+  } } }
+}
+```
+
+`status` 为 `unknown` 时没有探索权限；`scanning` 时原生扫描或矿量数据尚未就绪；二者的 `minerals` 均为 null，不能按零处理。`known` 返回所有矿物类型，`amount: 0` 才表示已知零矿量。气态行星的固体矿物列表为空，气体物品及速度另列。`amount`、`count` 保留原生矿量和矿脉数量语义，油井数值不转换为规划吞吐。
+
+权限复用原生行星面板规则：当前行星需要等级 1，同星系需要 2，宇宙距离小于 14400000 需要 3，否则需要 4；已有工厂且等级至少 1 时可观察。具备权限的查询会请求原生扫描，不加载或创建远端工厂。海洋类型与原生面板一致始终可见；气体产量要求可观察。查询结果只代表本次游戏 tick，天体位置与权限需刷新。
+
+受限矿脉组、气体和远端工厂入口在通用字段读取、列表过滤及无子字段展开时同样受限；旧 galaxy 摘要中不可见的矿脉字段返回 null。行星与恒星对象的生成种子不通过通用查询提供，不得根据其他游戏描述中的种子重建未知资源。
+
+
 ### 全息信标与行星备忘录
 
 `digitalSystem` 对应 `factory.digitalSystem`，`galacticDigital` 对应 `data.galacticDigital`。直接选择原生字段；读取不会创建、修改备忘录或确认提醒。
@@ -116,6 +141,33 @@ query Discover {
 字段读取失败可能返回 `null`，按未知值处理。请求由游戏主线程查询 tick 处理，记录 `metadata.gameTick` 和行星以关联各次观测。
 
 ## 常用查询根的实际形状
+
+物流查询沿用原生对象，不提供供货箱推荐或自动网络规划。示例（数组达到 limit 时分页；index 需按原始数组位置读取，不要把过滤后的序号当槽位）：
+
+```graphql
+{
+  player {
+    inhandItemId inhandItemCount inhandItemInc
+    package { size grids(limit:256) { itemId count inc } }
+    deliveryPackage {
+      unlocked enable rowCount colCount
+      grids(limit:100) { itemId count inc ordered requireCount recycleCount stackSize stackSizeMultiplier }
+    }
+  }
+  history { dispenserDeliveryMaxAngle }
+  localFactory {
+    transport {
+      dispenserPool(where:{id_gt:0},limit:32) {
+        id entityId storageId filter playerMode storageMode
+        energy energyMax idleCourierCount workCourierCount pairCount
+        storage { id grids(where:{count_gt:0},limit:64) { itemId count inc } }
+      }
+    }
+  }
+}
+```
+
+配送器 storageId 指向当前顶层箱子，叠箱后会变；下层库存与输送由原生处理。filter 为负数表示全部回收。配送角范围直接读取当前 history 生效值；无需为查询而研究扩展科技。物流背包自动补货/回收阈值与格内实际库存分开，普通背包满也不代表物流格已满。拆除 returnedItems 统计普通背包、物流背包、手中三者净增量；垃圾另查顶层 trash。
 
 | 根 | 当前返回 |
 | --- | --- |
@@ -207,7 +259,7 @@ query FindPrototypes {
 
 在 `production.factoryStatPool` 中用行星 `factoryIndex` 定位工厂，再通过物品索引映射读取对应统计。
 
-`waitUntil` 的工厂增量实现通过 `productIndices[itemId]` 定位 `productPool`，用 `total[6]` 与 `total[13]` 分别作生产、消耗基线。连续计量还需实测字段含义、重置条件、时间单位和覆盖范围，再用累计量差除以游戏时间差。
+通过 `productIndices[itemId]` 定位 `productPool`；`total[6]` 和 `total[13]` 分别是 `waitUntil` 使用的生产、消耗累计值。计算连续速率时，用同一统计范围内的累计量差除以游戏时间差。
 
 `productRegister` 和功率 register 是原始统计字段，先核实采样周期、能量单位及每 tick 到每秒的转换，再用于产速或功率计算。
 
@@ -229,7 +281,7 @@ query FindPrototypes {
 }
 ```
 
-`ui.notices` 保存本次已加载对局内的科研完成、教程窗口、桌面教程条目和顾问提示。字段 `kind` 分别为 `research`、`tutorial`、`tutorialTip`、`advisor`；`id` 是本进程提示记录编号，用于 `dismissNotice`，不是科技或教程原型 ID。记录会随切换对局清空；超过 64 条时仅淘汰已确认且不可见的历史项，未确认项不会被截断或淘汰。目标面板是原生对象，可用 `_fields` 探索目标组和文本，不自动决定科技路线。
+`ui.notices` 保存当前对局的科研完成、教程窗口、桌面教程条目和顾问提示。字段 `kind` 分别为 `research`、`tutorial`、`tutorialTip`、`advisor`；`id` 用于 `dismissNotice`，不是科技或教程原型 ID，切换对局后需重新查询。未确认消息会持续保留。目标面板可用 `_fields` 探索目标组和文本。
 
 Mod 不定时自动关闭提示。LLM 读取并理解消息后，以 `dismissNotice` 显式确认；消息仍可见时同时调用原生关闭方法。原生自行收起只改变 `visible`，不会改变确认状态，未确认消息继续出现在每次状态响应的 `notifications.notices` 中。目标面板持续反映原生进度，确认消息不会把游戏目标标记为完成或忽略。Agent 应结合 `warningSystem`、科技和目标对象判断下一步，及时确认已处理消息，避免窗口挡住画面。此入口不承诺捕获所有游戏窗口或瞬时提示，也不代替错误或模态决策对话框的确认。
 
