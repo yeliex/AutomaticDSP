@@ -206,7 +206,8 @@ namespace AutomaticDSP.State
             return new JsonObject
             {
                 ["data"] = result,
-                ["trash"] = CaptureTrash(64),
+                ["trash"] = CaptureTrash(false),
+                ["construction"] = CaptureConstructionSummary(GameMain.data, GameMain.localPlanet?.id ?? 0),
                 ["notifications"] = AutomaticDSP.UI.GameNoticeService.CapturePending()
             };
         }
@@ -216,7 +217,7 @@ namespace AutomaticDSP.State
             switch (name)
             {
                 case "trash":
-                    return CaptureTrash(int.MaxValue);
+                    return CaptureTrash(true);
                 case "trashSystem":
                     return GameMain.data?.trashSystem;
                 case "galacticDigital":
@@ -272,6 +273,8 @@ namespace AutomaticDSP.State
                     return CaptureRecipePrototypes();
                 case "items":
                     return CaptureItemPrototypes();
+                case "veges":
+                    return LDB.veges.dataArray;
                 case "cargo":
                     return CaptureCargoTables();
                 case "warningSystem":
@@ -335,6 +338,7 @@ namespace AutomaticDSP.State
                     QueryRoot("research", "object", "Current technology research state."),
                     QueryRoot("technology", "object", "Alias of research."),
                     QueryRoot("techs", "list", "Technology prototype summaries."),
+                    QueryRoot("veges", "list", "原生植被原型目录，可与植被收藏中的 protoId 对应。"),
                     QueryRoot("recipes", "list", "Recipe prototype summaries."),
                     QueryRoot("items", "list", "Item prototype summaries."),
                     QueryRoot("cargo", "object", "游戏原生 Cargo 增产、加速和耗电倍率表，按喷涂点数索引。"),

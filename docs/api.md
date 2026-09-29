@@ -625,6 +625,9 @@ query ObserveStorage {
 - `placeBuilding`
 - `placeBelt`
 - `placeSorter`
+- `reformTerrain`：指定单次原生笔刷的整平／填海或地形还原。
+- `collectVegetation`：收取指定现场植被到原生植被收藏。
+- `plantVegetation`：从收藏种植指定原型，执行原生碰撞校验。
 - `setRecipe`
 - `setLabResearchMode`
 - `waitUntil`
@@ -879,6 +882,20 @@ query ObserveStorage {
 
 完整行星内铁块生产线任务示例见 `docs/examples/planetary-iron-line.md`。
 
+## 默认建造状态摘要
+
+所有成功状态查询的顶层 `construction` 默认包含全局已有工厂的 `count`、`pendingCount`（待建造）、`destroyedCount`（待重建），以及当前星球的 `localPlanetId`、`localCount`、`localPendingCount`、`localDestroyedCount`。`items {itemId,name,pendingCount,destroyedCount,localPendingCount,localDestroyedCount}` 同时按建筑汇总两种范围的数量，最多列 8 种，超过以 `itemsTruncated` 标记，合计及已列种类的数量仍完整。分类使用原生 `prebuild.isDestroyed`，不会将超距或缺料误报为被摧毁；没有当前星球时本地计数为 0，全局待办仍返回。此统计不加载未知星球，不受 UI 告警显示开关影响，也不等同于材料需求量。具体对象通过 `factory.prebuildPool` 查询，其他已知星球遵循现有工厂查询权限。这涵盖所有有效预建，不限于本次 Mod 任务。
+
+## 地形改造、还原与植被移植
+
+`reformTerrain` 接收 `position`、`mode`（flatten/restore，默认 flatten）、`brushSize`（1–10，默认 1）、`brushType`（1–7，默认 1）、`brushColor`（0–31，默认 0）、`buryVeins`（默认 false）。类型 7 是无装饰地基；还原必须使用 restore。要求地基科技和足够原生材料／沙土，按吸附后的中心检查建造范围。手持其他物品时返回 `hand_item_conflict`；还原返还地基到手持槽。
+
+`collectVegetation {vegeId}` 收取现场植被，`plantVegetation {protoId,position,rotation?}` 从收藏种植；两个 ID 分别是现场池索引与植被原型 ID。种植必须通过原生碰撞校验，普通模式消耗一个收藏，不允许生成矿脉、飞行仓或特效对象。
+
+三类命令均走机甲指令通道并即时核实结果；不自动靠近、不创建预建，超距返回 `out_of_range`。地形结果含实际网格变化、`foundationDelta`、`sandDelta` 及前后高度；植被结果含实际 `vegeId` 和 `collectionDelta`。已生效的操作不随取消任务回滚。完整参数、原生区域限制与结果说明见 [地形与植被控制](../skills/automatic-dsp/references/interface/game-control.md#地形改造还原与植被移植)。
+
+通过 `veges { id: ID name type: Type }` 查询原生植被目录，通过 `player { vegetableCollection { playerVegeDict { key value } } }` 查询收藏。现场对象仍来自 `factory.vegePool`。
+
 ## POST /tasks/{id}/cancel
 
 请求取消任务。
@@ -1055,7 +1072,7 @@ Invoke-RestMethod `
 
 ### 垃圾与退出
 
-状态响应顶层 `trash` 包含垃圾统计及前 64 个有效条目，截断时 `truncated: true`。完整列表使用查询根 `trash.entries` 分页；`trashSystem` 可读原生垃圾池。`landPlanetId` 区分落地星球，0 为漂浮；`nearPlanetId` 不代表归属。`withinPickupRange` 仅表达距离条件，不保证拾取可执行或背包可容纳。
+状态响应顶层 `trash` 包含 `count`（全局垃圾块数）、`localPlanetCount`（当前星球落地垃圾块数）和最多 8 种物品的 `items {itemId,name,count,localCount}` 摘要。items 内数量是物品个数；按垃圾池首次出现顺序列种类，已列种类汇总全池，超过 8 种以 `itemsTruncated: true` 标记。不默认附带逐块明细；先判断是否值得处理，需要拾取时再显式选择查询根 `trash` 的统计字段或 `entries` 分页，结果位于 `data.trash`。`trashSystem` 可读原生垃圾池。`landPlanetId` 区分落地星球，0 为漂浮；`nearPlanetId` 不代表归属。`withinPickupRange` 仅表达距离条件，不保证拾取可执行或背包可容纳。
 
 即时操作命令：`discardInventoryItem {itemId,count}` 从背包原生抛出；`pickupTrash {trashId,itemId}` 启动原生吸取，返回 `phase: pickupStarted`，应继续检查入包和溢出；`clearTrash {scope:"all"}` 永久清理全局垃圾，不返还物品。详情见 Skill 游戏控制接口。
 

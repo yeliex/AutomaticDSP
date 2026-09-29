@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/AutomaticDSP/State/GameStateQueryService.Construction.cs" Link="Construction.cs" />
+    <Compile Include="../../src/AutomaticDSP/State/GameStateQueryService.Trash.cs" Link="Trash.cs" />
+    <Compile Include="../../src/AutomaticDSP/Serialization/JsonObject.cs" Link="JsonObject.cs" />
+  </ItemGroup>
+</Project>

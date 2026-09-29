@@ -1,6 +1,6 @@
 # 游戏内状态查询接口
 
-每次状态响应的顶层 `trash` 返回全局垃圾数量、本星球／其他星球落地数量、漂浮数量和最多 64 条垃圾信息，`truncated` 标识截断。完整列表可查询 `trash { entries(offset: 0, limit: 256) { trashId itemId count landPlanetId nearPlanetId isLocalPlanet distance withinPickupRange expire } }`，并分页或用 `where` 筛选。`trashSystem` 提供原生 `container.trashObjPool`、`trashDataPool`；两池以索引对应，物品为空的槽位无效。
+每次状态响应的顶层 `trash` 返回全局垃圾块数量 `count`、当前星球落地垃圾块数量 `localPlanetCount`，以及最多 8 种物品的 `items { itemId, name, count, localCount }` 摘要，不默认附带逐块明细。外层数量计垃圾块，items 内数量计该物品在垃圾中的总个数与当前星球落地个数；不代表全部可拾取。摘要按垃圾池首次出现顺序列种类，超过 8 种时 `itemsTruncated: true`，已列种类仍汇总全池，不把省略的种类当作不存在。先据摘要判断是否处理，决定拾取后再显式查询 `trash { entries(offset: 0, limit: 256) { trashId itemId count landPlanetId nearPlanetId isLocalPlanet distance withinPickupRange expire } }`，并分页或用 `where` 筛选；结果位于 `data.trash`。显式查询根还保留 `otherPlanetCount`、`floatingCount` 等统计。`trashSystem` 提供原生 `container.trashObjPool`、`trashDataPool`；两池以索引对应，物品为空的槽位无效。
 
 `landPlanetId` 表示实际落地星球；0 表示尚未落地／太空漂浮，不能据此认定属于当前星球，`nearPlanetId` 也不等于落地归属。`localPosition` 仅对落地星球有效，`universalPosition` 是宇宙坐标，`relativePosition` 与当前玩家相对坐标系一致。`withinPickupRange` 只判断原生距离范围与落地星球，实际拾取还受玩家状态、筛选和吸取进度影响；背包不足可能重新抛出物品。本星球垃圾不一定在拾取范围内。
 
@@ -53,6 +53,26 @@ HTTP 200 返回 `data`，结构对应请求的字段或别名；同时固定附�
 
 ## 请求及字段发现
 
+### 默认待建造与待重建摘要
+
+每次成功状态响应还附带顶层 `construction`，覆盖存档中所有已有工厂的有效 `prebuildPool` 对象，不限于当前星球或 Mod 提交的任务，不加载或探索未知星球。全局字段为 `count`（合计）、`pendingCount`（普通待建造）、`destroyedCount`（原生 `isDestroyed` 标记的待重建）；当前星球字段为 `localPlanetId`、`localCount`、`localPendingCount`、`localDestroyedCount`。没有当前星球时本地计数为 0，全局统计仍保留；游戏数据不可用时明确返回不可用状态。
+
+`items {itemId,name,pendingCount,destroyedCount,localPendingCount,localDestroyedCount}` 按建筑名称与物品 ID 汇总两种范围的数量。按工厂／池中首次出现顺序最多列 8 种建筑，`itemsTruncated` 标记省略，已列种类仍汇总全部工厂；总计不因省略而减少。摘要统计对象数量，不等同于 UI 可配置的告警数量或所需物品总数。
+
+距离过远、缺料或无人机尚未出发不等同于被摧毁。需要处理具体对象时查询原生明细，列表按需分页：
+
+```graphql
+{
+  factory {
+    prebuildPool(where: { id_gt: 0 }, limit: 128) {
+      id protoId pos isDestroyed itemRequired builderLaunched distanceToPlayer
+    }
+  }
+}
+```
+
+摘要表示待办状态，不承诺对象当前可施工或已经完成重建。
+
 ### 行星资源与探索权限
 
 `player.flight` 返回原生移动模式、planetId / localPlanetId、grounded、局部 position / localVelocity、双精度 uPosition / uVelocity、radialAltitude（离开本地行星后为 null）、warpCommand / warpState，以及推进器、储能、reactorPowerGen、航行速度和翘曲器状态。cursorLocked 表示当前光标实际锁定状态，disableLockCursor 表示原生航行 UI 已关闭自动锁定。径向高度以行星 realRadius 为基准，不能代替地形接地判断；宇宙速度包含行星运动，不能当作相对地面速度。
@@ -77,6 +97,22 @@ HTTP 200 返回 `data`，结构对应请求的字段或别名；同时固定附�
 
 受限矿脉组、气体和远端工厂入口在通用字段读取、列表过滤及无子字段展开时同样受限；旧 galaxy 摘要中不可见的矿脉字段返回 null。行星与恒星对象的生成种子不通过通用查询提供，不得根据其他游戏描述中的种子重建未知资源。
 
+
+### 植被目录与收藏
+
+`veges` 返回原生 `LDB.veges` 原型目录，字段遵循原生大小写（`ID`、`Type` 等），可用别名统一输出；`player.vegetableCollection` 和 `factory.vegePool` 分别对应玩家收藏与现场对象。收藏字典条目的 `key` 是原型 ID，`value` 是数量，不能与现场 `vegeId` 混用。飞行仓及特效等特殊原型不属于可移植对象。
+
+```graphql
+{
+  veges(limit: 256) { id: ID name type: Type modelIndex: ModelIndex circleRadius: CircleRadius }
+  player { vegetableCollection { playerVegeDict(limit: 256) { key value } } }
+  factory { vegePool(where: { id_gt: 0, distanceToPlayer_lt: 80 }, limit: 128) {
+    id protoId pos rot distanceToPlayer
+  } }
+}
+```
+
+列表按需分页。种植后查询返回的 `vegeId` 确认现场对象及收藏变化；不要把收藏中的原型直接当作已存在的实体。
 
 ### 全息信标与行星备忘录
 

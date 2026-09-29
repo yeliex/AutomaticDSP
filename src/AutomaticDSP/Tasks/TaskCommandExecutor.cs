@@ -28,6 +28,13 @@ namespace AutomaticDSP.Tasks
         {
             switch (command.NormalizedType)
             {
+                case "reformterrain":
+                    ExecuteReformTerrain(command, now);
+                    return;
+                case "collectvegetation":
+                case "plantvegetation":
+                    ExecuteVegetation(command, now);
+                    return;
                 case "navigateto":
                     ExecuteNavigateTo(command, now);
                     return;

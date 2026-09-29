@@ -352,6 +352,30 @@ Agent 提供路径，Mod 按相邻点进行原生吸附和预览。下发后检�
 
 建造成功、失败、超时或取消后，退出该命令进入的建造模式；尚未建成的预建不自动删除。取消 Mod 任务、移除原生制造/科研、取消预建是不同操作：`POST /tasks/{id}/cancel` 不撤销已入队的制造/科研或已创建的预建。等待中的科研被移除后返回 `research_interrupted`。预建已转为实体时不会按旧预建 ID 拆除实体，需重新观察。
 
+## 地形改造、还原与植被移植
+
+这些命令在 `instruction` 通道一次执行完成，与移动、采集及建造下达互斥，不创建预建或等待无人机。需要存活的机甲位于已加载的固态行星，且不在航行或序幕中；可选 `planetId` 限定当前星球。目标超过 `mecha.buildArea` 时返回 `out_of_range`，先移动再提交。
+
+| 命令 | 参数 |
+| --- | --- |
+| `reformTerrain` | 必填 `position`；`mode: "flatten" / "restore"`，默认 flatten；`brushSize` 1–10，默认 1；`brushType` 1–7，默认 1；`brushColor` 0–31，默认 0；`buryVeins` 默认 false |
+| `collectVegetation` | 必填现场植被 `vegeId`，来自 `factory.vegePool` 的有效 id |
+| `plantVegetation` | 必填收藏中的 `protoId` 和 `position`；可选球面朝向角 `rotation`，默认 0 |
+
+`reformTerrain` 要求解锁地基（物品 1131）。位置按原生改造网格吸附；距离按吸附后的中心检查。改造使用原生点列、增产点数、沙土及地基结算，包含矿脉和植被副作用、基地禁改区域裁剪与基地坑的扩展费用。类型 7 是无装饰地基，不是地形还原；`restore` 才调用原生还原逻辑，并保留实体等对象的受保护区域。restore 不使用 brushType/brushColor，但传入时仍须在合法范围。
+
+还原地基进入手持物品，空手时会选中空的地基手持槽。手持非地基物品返回 `hand_item_conflict`，不会强行清空背包或丢弃物品。沙土不足返回 `insufficient_sand`，地基不足返回 `missing_item`。沙土收支可能不对称，以游戏原生计算为准；还原不是事务回滚。
+
+结果含吸附后的 `position`、`foundationDelta`、`sandDelta`（正数增加，负数消耗）、`heightBefore/heightAfter`、`changedCells {index,before,after}` 及 `nativeAreaMode`（0 普通、1 禁改区域裁剪、2 基地坑扩展）。网格字节高 3 位是改造类型，低 5 位是颜色。重复操作或受保护区域可能没有变化；不能用 `SUCCEEDED` 代替实际范围验证。掩埋、露矿仍遵循原生遮挡规则。后续建造显式依赖改造命令。
+
+植被收取进入 `player.vegetableCollection.playerVegeDict`，不产出手挖材料；种植调用原生碰撞校验，并从收藏扣除一个对应原型。不会移植矿脉、飞行仓或特效对象。普通模式缺少收藏返回 `missing_vegetation`；沙盒仅遵循游戏已启用的原生沙盒规则，不由命令开启。成功结果含现场 `vegeId`、`protoId`、实际 `position`、`collectionCount` 和 `collectionDelta`；种植还返回 `nativeCondition`。碰撞失败返回 `collision` 和原生条件。收取后原对象 ID 不再有效，种植返回新对象 ID，可能复用原空槽。
+
+```json
+{"commands":[{"id":"整平","type":"reformTerrain","position":{"x":155.2258,"y":-8.439054,"z":128.382874},"brushSize":1},{"type":"reformTerrain","mode":"restore","dependsOn":["整平"],"position":{"x":155.2258,"y":-8.439054,"z":128.382874},"brushSize":1}]}
+```
+
+坐标仅是测试档示例，实际目标需重新查询。植被目录与收藏查询见 [游戏状态](game-state.md#植被目录与收藏)。区域规划与植被品种选择由外部 Agent 决定。
+
 ## 信息提示
 
 `dismissNotice` 需要 `notifications.notices` 或 `ui.notices` 中条目的 `noticeId`。确认该记录；仍可见且身份未变化时，在主线程调用对应原生关闭方法，已自行收起则仅确认记录。同一记录重复确认成功；记录不存在或已切换对局返回 `notice_not_found`。支持即时通道。读取状态不会确认提示，未确认消息每次查询都会返回，由 LLM 理解后及时关闭。不会自动确认错误、存档或其他决策对话框，也不会把游戏目标标记为完成或忽略。详情见 [提示与地形查询](game-state.md#提示与地形查询)。

@@ -49,6 +49,14 @@ static class Program
         Check(Seen["build"].Status==CommandCancelled&&Seen["move"].Status==CommandCancelled&&!Seen.ContainsKey("later"),"失败停止本任务未完成工作");
         q=New();GameMain.gameTick=10;var paused=C("paused","waitUntil");paused.TimeoutSeconds=1;Add(q,paused);q.Update();Seen["paused"].StartedAt=DateTimeOffset.UtcNow.AddSeconds(-2);q.Update();
         Check(GameMain.gameTick==10&&Seen["paused"].Status==CommandFailed,"游戏 tick 不推进时仍按墙钟超时");
+        foreach(var type in new[]{"reformTerrain","collectVegetation","plantVegetation"})
+        {
+            q=New();Add(q,C("move","moveTo"),C("terrain",type),C("later","moveTo"));q.Update();
+            Check(!Seen.ContainsKey("terrain"),type+" 等待移动释放机甲");
+            Complete.Add("move");q.Update();
+            Check(Seen["terrain"].OwnsPlayerOrders&&!Seen["terrain"].Background&&!Seen.ContainsKey("later"),type+" 占用机甲且阻止后续移动");
+            Complete.Add("terrain");q.Update();Check(Seen.ContainsKey("later"),type+" 完成后释放机甲");
+        }
         q=New();id=Add(q,C("take","entityFastTakeOut"));q.Update();q.Cancel(id);q.Update();var count=Executions;q.Update();
         Check(Seen["take"].Status==CommandCancelled&&Executions==count&&TaskCommandExecutor.Stops.Contains("take"),"取消取料后不再调用执行器");
         Console.WriteLine("调度回归全部通过");
