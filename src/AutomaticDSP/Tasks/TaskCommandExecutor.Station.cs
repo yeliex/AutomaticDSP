@@ -1,5 +1,6 @@
 using System;
 using AutomaticDSP.Serialization;
+using Newtonsoft.Json.Linq;
 using static AutomaticDSP.Tasks.TaskStatusNames;
 
 namespace AutomaticDSP.Tasks
@@ -15,6 +16,29 @@ namespace AutomaticDSP.Tasks
                 return;
             }
             var desc = LDB.items.Select(entity.protoId).prefabDesc;
+            if (command.NormalizedType == "setstationchargepower")
+            {
+                // 对齐原生充电滑块的范围与 3 MW 刻度，不修改站内储能或实际供电。
+                var minPowerMW = desc.workEnergyPerTick / 2 / 50000 * 3;
+                var maxPowerMW = desc.workEnergyPerTick * 5 / 50000 * 3;
+                if (!TryGetToken(command, "powerMW", out var token) || token.Type != JTokenType.Integer ||
+                    !int.TryParse(token.ToString(), out var powerMW) || powerMW % 3 != 0 ||
+                    powerMW < minPowerMW || powerMW > maxPowerMW)
+                {
+                    finishCommand(command, CommandFailed, "invalid_command", "powerMW 必须为原生范围内的整数，且为 3 的倍数。", now,
+                        new JsonObject { ["minPowerMW"] = minPowerMW, ["maxPowerMW"] = maxPowerMW });
+                    return;
+                }
+                ref var consumer = ref factory.powerSystem.consumerPool[station.pcId];
+                var previousPowerMW = consumer.workEnergyPerTick * 60.0 / 1000000.0;
+                consumer.workEnergyPerTick = (long)powerMW / 3 * 50000;
+                finishCommand(command, CommandSucceeded, null, null, now, new JsonObject
+                {
+                    ["entityId"] = entity.id, ["previousPowerMW"] = previousPowerMW,
+                    ["powerMW"] = powerMW, ["workEnergyPerTick"] = consumer.workEnergyPerTick
+                });
+                return;
+            }
             if (command.NormalizedType == "transferstationitem")
             {
                 var itemId = GetInt(command, "itemId", 0);

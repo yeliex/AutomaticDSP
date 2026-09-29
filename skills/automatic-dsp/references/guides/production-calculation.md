@@ -8,7 +8,7 @@
 
 可将查询响应保存为 JSON，使用 `node scripts/prototype-to-recipe.mjs 快照.json 配方ID 设备物品ID 目标物品ID 每秒目标量` 输出 `production-calc.mjs recipe` 的输入。快照需包含配方的 `id type unlocked timeSeconds items results`，以及设备物品的 `id unlocked prefabDesc`；描述中选择 `isAssembler assemblerRecipeType assemblerSpeedMultiplier isLab labSpeedMultiplier workPowerW`。脚本保留所有投入与产物，拒绝特殊加工，不自动附加增产。
 
-目录按页读取并按 ID 建立产物到配方的本地索引；连接游戏或切换存档后按需重读，解锁、库存和实例状态每次规划时重读。完整查询契约见 [原型与连接](../interface/prototypes-and-connections.md)。
+目录按页读取，按物品 ID 分别建立产出与消耗配方的本地索引，保留所有候选及每轮完整投入、产出；连接游戏或切换存档后按需重读，解锁、库存和实例状态每次规划时重读。计算前按[配方候选复核](goal-planning.md#配方候选复核)选路线，不能让单配方计算器替代候选比较。完整查询契约见 [原型与连接](../interface/prototypes-and-connections.md)。
 
 计算前确定边界：哪些物品现场制造，哪些外部输入；原有产能中有多少已被其他产线占用；优化目标是尽快投产、节矿、节电、少建筑还是少占地。已有供应按稳定可分配余量抵扣，库存另算可维持时间。
 

@@ -204,7 +204,7 @@ HTTP 层错误常用 `{"error":{"code":"...","message":"..."}}`；执行失败�
 
 ## 可用操作
 
-当前命令覆盖行星内基础操作、飞行导航、运输站配置、物流配送器和物流背包操作。蓝图应用、戴森球编辑，以及射线接收/发射目标/增产模式、战斗和地形改造的专用控制接口待支持。规划涉及这些操作时，可先完成材料与产线准备，并记录待执行部分。
+当前命令覆盖行星内基础操作、飞行导航、运输站配置、物流配送器、物流背包、地形植被和生产设置。蓝图应用、戴森球编辑与战斗专用控制接口待支持。规划涉及这些操作时，可先完成材料与产线准备，并记录待执行部分。
 
 下列命令对象放入 `POST /tasks` 的 `commands` 数组。可加 `id` 和 `timeoutSeconds`。示例数字仅用于说明格式，执行前必须替换为当前数据。
 
@@ -253,6 +253,10 @@ HTTP 层错误常用 `{"error":{"code":"...","message":"..."}}`；执行失败�
 
 快速取放由原生逻辑决定物品与数量；储物实体的指定物品取放使用 `transferStorageItem`。该命令移动数量大于零即可成功，实际数量读取 `movedCount`；没有转移时返回 `no_item_transferred`。
 
+`entityFastFillIn` 和 `entityFastTakeOut` 没有 `count` 参数，不能给它们附加数量并假定生效。需要限制生产建筑的投料数量时，先确认手中为空，用 `transferInventoryItem {from:"package",to:"hand",itemId,count}` 拆出最多所需数量，再在同一有序任务中调用 `entityFastFillIn {entityId,fromPackage:false}`。实际填入可能少于手中数量，查询 `movedItems` 和手中余量，按需用 `transferInventoryItem` 将余量退回背包。此方式限制投料上限，不保证设备接收足量。
+
+储物仓和运输站货槽分别通过 `transferStorageItem`、`transferStationItem` 指定数量取回；生产建筑成品暂没有直接指定数量取回接口，`entityFastTakeOut(toPackage:false)` 也不表示限量。不要将储物仓接口套用到制造设施，或为了取少量成品而切换配方清空缓存。
+
 普通运输站的 `entityFastFillIn` 会补充运输工具，不能视为指定货槽投料。传送带可用 `fromPackage:false` 放入手中真实物品，原生单次投入数量读取 `movedCount`。输入站端口的 `storageIdx` 可能随接收物品更新，它是原生货槽缓存，不是用户设置的输入过滤。
 
 `craftInventory` 使用原生递归材料判定，缺料返回 `missing_item` 和 `missing` 列表，未解锁返回 `recipe_locked`。`waitForCompletion` 默认 false，成功仅表示原生入队，结果为 `action: enqueued, completed: false`。设为 true 时后台跟踪本次原生制造任务剩余次数，制造完成后成功；不以背包净增判断，避免产物被并行操作消耗导致误报。等待结果含 `remainingCount`、`forgeTotalTime`；原生任务在未完成时被移除返回 `craft_interrupted`。
@@ -274,6 +278,8 @@ HTTP 层错误常用 `{"error":{"code":"...","message":"..."}}`；执行失败�
 
 `navigateTo.useWarp=true` 允许在距离、航向、科技、能量和翘曲器满足条件时自动启动曲速，接近目标时退出；不可用时继续普通航行。结果 `useWarp` 表示请求选项，`warpUsed` / `warpStatus` 表示实际使用情况；直接 `warp` 命令不满足前置条件时会失败。
 
+`navigateTo` 在科研等全屏界面、文本输入、截图模式或星图打开期间继续逐 tick 驱动原生移动动作，界面按键不视为移动接管；原超时继续生效，不反复重建任务。游戏暂停时不会推进物理运动。正常游戏视图中的移动、停止，以及显式建造或手动导航订单仍返回 `manual_override`。低层固定时长飞行输入保持原有界面中断行为；燃料不足、会话变化和真正的手动接管不自动重试。
+
 `arrivalDistance` 记录太空点首次判定到达时的最近距离，尚未到达或目标为行星时为 null。`distanceToTarget` 是终态实际距离，可能因退出曲速的惯性超过 tolerance。
 
 fly 的 direction 是本行星局部方向，水平输入投影到当前位置切平面，lift 为升降输入；sail 的 direction 是宇宙方向单位向量，thrust=1 转向该方向，-1 执行原生制动，0 松开推进键（中间值仍受原生输入阈值控制），boost 对应航行加速键。它们都不是目标位置。fly 持续上升并水平移动可以在原生推进器等级满足时进入 Sail；sail 接近地表后的模式转换仍由原生处理。进入 Fly 后再调用 land。
@@ -283,6 +289,18 @@ fly 的 direction 是本行星局部方向，水平输入投影到当前位置�
 取消、超时或命令结束仅撤销本命令输入，不停速、不强制降落、不自动退出曲速。终态 result 返回真实 movementState、planetId、局部与宇宙位置、宇宙速度、warpCommand、warpState、coreEnergy 及 appliedTicks。键盘移动、曲速/加速键、原生移动订单、导航或建造接管会中止输入并返回 manual_override。默认输入租期为 120 秒，显式 timeoutSeconds 可覆盖。
 
 科技不足为 tech_locked；能源不足为 insufficient_energy；曲速缺翘曲器为 missing_warper。曲速入口由原生耗能和消费方法执行，自动补充遵守原有设置。拒绝前置条件不会主动消耗翘曲器。正常运行中的产线、手搓、燃烧室仍可能改变能量与库存。
+
+## 生产模式与发射轨道
+
+以下命令接受 `entityId` 或 `target` 实体引用，以及可选 `planetId`；进入机甲指令通道，要求实体在当前行星及机甲建造范围内，超范围返回 `out_of_range`。
+
+| 命令 | 参数 | 原生约束与结果 |
+| --- | --- | --- |
+| `setRayReceiverMode` | `mode: power / photon` | 射线接收站发电／光子模式；光子需解锁原型指定的产物，否则 `item_locked`。转回发电返还整数缓存产物，清空产物缓存；背包溢出按原生机制抛出垃圾。返回 `mode`、`productId`。 |
+| `setEjectorOrbit` | 非负整数 `orbitId`；可选布尔 `autoOrbit` | 电磁轨道弹射器调用原生 `SetOrbit`；0 为不指定轨道，正值须对应已启用的现有轨道，否则 `invalid_orbit`。未提供 autoOrbit 时保留当前设置；自动换轨开启时游戏之后可改变目标。返回实际 `orbitId`、`autoOrbit`。 |
+| `setProliferatorMode` | `mode: extra / speed` | 需解锁增产剂科技（1151），否则 `tech_locked`。制造组件需当前配方支持额外产出；研究站需矩阵生产模式，否则 `invalid_recipe`。同步堆叠研究站的模式。返回 `mode`、`forceAccMode`；不补充增产剂或喷涂点。 |
+
+设置结果通过原生 `factory.powerSystem.genPool` 的 `productId`、`factory.factorySystem.ejectorPool` 的 `orbitId/autoOrbit`、`assemblerPool/labPool` 的 `forceAccMode` 核对。射线接收产量、发射可达性及喷涂效果仍取决于原生运行条件。垂直发射井的节点选择由原生系统负责，此接口不指定节点或创建戴森球结构。
 
 ## 研究
 
@@ -313,6 +331,7 @@ fly 的 direction 是本行星局部方向，水平输入投影到当前位置�
 | `setSorterFilter` | 分拣器实体目标、物品 `itemId`；0 清除过滤 |
 | `setStationStorage` | 普通运输站实体目标、零起始 `storageIndex`、`itemId`（0 清空）；可选 `max`（默认科技允许容量）、`localLogic` / `remoteLogic`（None / Supply / Demand，默认 None） |
 | `setStationVehicles` | 普通运输站实体目标、`itemId`（5001 无人机 / 5002 运输船）、目标总数 `count`；计入正在工作的工具，实际从背包放入或将闲置工具取回 |
+| `setStationChargePower` | 普通运输站实体目标、整数 `powerMW`，按原生 3 MW 刻度与建筑原型允许范围设置充电上限；不改变储能和电网实际供电 |
 | `setSplitterPriority` | 四向分流器实体目标、端口 `slot`（0–3）、布尔值 `priority` |
 | `upgradeEntity` | 实体目标、目标等级物品 `itemId`；在机甲建造范围内原地升级 |
 | `cancelPrebuild` | 正整数 `prebuildId`；可选当前 `planetId` | 在建造范围内调用原生预建拆除和退款；需先取消等待该预建的 Mod 任务，刷新 `factory.prebuildPool` 后提交 |
@@ -341,6 +360,8 @@ fly 的 direction 是本行星局部方向，水平输入投影到当前位置�
 ```
 
 Agent 提供路径，Mod 按相邻点进行原生吸附和预览。下发后检查实际 `entityIds` 及连接。
+
+传送带原生建造校验失败时，结果包含 `condition`、零起始 `previewIndex` 和失败段实际 `position`；没有具体失败预览时后两者为 null。索引对应实际预览列表，已有端点可能被移除，不保证等于请求点列索引。根据失败位置检查连接和碰撞，不整条路径盲目重试。
 
 分拣器 `input` 是取物来源，`output` 是放物去向，例如来源传送带、去向熔炉。引用带段时用 `entityIndex` 选择连接段。
 

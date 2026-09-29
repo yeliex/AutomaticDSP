@@ -61,11 +61,14 @@ namespace AutomaticDSP.Tasks
             if (DateTimeOffset.UtcNow >= deadline) Error = "timeout";
             else if (GameMain.mainPlayer != Player) Error = "session_changed";
             else if (!Player.isAlive || controller.gameData.disableController) Error = "controller_unavailable";
-            else if (VFInput.inFullscreenGUI || VFInput.inputing || VFInput.inScreenshotMode || UIGame.viewMode >= EViewMode.Globe || controller.cmd.type == ECommand.Build ||
+            if (Error != null) return false;
+            var uiOpen = VFInput.inFullscreenGUI || VFInput.inputing || VFInput.inScreenshotMode || UIGame.viewMode >= EViewMode.Globe;
+            // 界面按键不代表移动接管；导航仍逐 tick 驱动原生动作，显式订单始终优先。
+            if ((Navigation == null && uiOpen) || controller.cmd.type == ECommand.Build ||
                 Player.navigation.navigating || (Player.currentOrder != null && !Player.currentOrder.targetReached) ||
-                controller.input0.sqrMagnitude > 0 || controller.input1.sqrMagnitude > 0 ||
+                (!uiOpen && (controller.input0.sqrMagnitude > 0 || controller.input1.sqrMagnitude > 0 ||
                 VFInput._warpKey || VFInput._sailSpeedUp || VFInput.rtsStop.onDown ||
-                (Navigation != null && VFInput._sailLockCursor))
+                (Navigation != null && VFInput._sailLockCursor))))
                 Error = "manual_override";
             else if (Navigation == null && Mode != "sail" && Mode != "warp" && Mode != "exitWarp" && Player.planetId != planetId)
                 Error = "planet_changed";
@@ -106,6 +109,8 @@ namespace AutomaticDSP.Tasks
             var speedKey = VFInput.override_keys[22];
             var warpKey = VFInput.override_keys[24];
             var warpDown = VFInput.axis_button.down[29];
+            var fullscreen = VFInput.inFullscreenGUI;
+            var inputing = VFInput.inputing;
             try
             {
                 controller.input0 = Vector4.zero;
@@ -131,6 +136,12 @@ namespace AutomaticDSP.Tasks
 
                 if (native == controller.actionSail)
                 {
+                    // 仅在原生航行动作内解除界面对合成加速/曲速键的屏蔽；同帧 UI 仍读取原值。
+                    if (Navigation != null)
+                    {
+                        VFInput.inFullscreenGUI = false;
+                        VFInput.inputing = false;
+                    }
                     // 临时生成等价按键边沿；还原绑定及全局输入，避免影响同帧其他系统。
                     VFInput.override_keys[22] = default;
                     VFInput.override_keys[24] = default;
@@ -156,6 +167,8 @@ namespace AutomaticDSP.Tasks
                 VFInput.override_keys[22] = speedKey;
                 VFInput.override_keys[24] = warpKey;
                 VFInput.axis_button.down[29] = warpDown;
+                VFInput.inFullscreenGUI = fullscreen;
+                VFInput.inputing = inputing;
             }
         }
 

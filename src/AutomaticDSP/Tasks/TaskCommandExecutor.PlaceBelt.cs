@@ -213,7 +213,13 @@ namespace AutomaticDSP.Tasks
                         BuildConditionCode(condition),
                         failedPreview?.conditionText ?? "Build condition failed.",
                         now,
-                        new JsonObject { ["condition"] = condition.ToString() });
+                        new JsonObject
+                        {
+                            ["condition"] = condition.ToString(),
+                            // 返回实际预览段，便于调用方定位失败；不替调用方调整路径。
+                            ["previewIndex"] = failedPreview == null ? (int?)null : tool.buildPreviews.IndexOf(failedPreview),
+                            ["position"] = failedPreview == null ? null : Vector(failedPreview.lpos)
+                        });
                     return;
                 }
 

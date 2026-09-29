@@ -615,6 +615,7 @@ query ObserveStorage {
 - `setStorageLimit`
 - `setSorterFilter`
 - `setSplitterPriority`
+- `setStationChargePower`：普通运输站目标与整数 `powerMW`，必须为 3 的倍数且在原生充电滑块范围内；保留当前星球、建造范围及站类型校验，只设置充电上限，不补充储能。
 - `craftInventory`
 - `removeForgeTask`：当前制造队列 `index` 和 `recipeId`，调用原生取消及材料退款。
 - `cancelPrebuild`：当前行星正整数 `prebuildId`，在建造范围内原生拆除未建成的预建；走普通队列。
@@ -796,6 +797,8 @@ query ObserveStorage {
 ```
 
 生产矩阵仍然使用 `setRecipe` 设置研究站的矩阵配方；`setLabResearchMode` 只用于研究模式。
+
+生产专用设置支持 `setRayReceiverMode`（`mode: power/photon`）、`setEjectorOrbit`（非负 `orbitId`，可选布尔 `autoOrbit`）和 `setProliferatorMode`（`mode: extra/speed`）。都接受实体目标引用及可选 `planetId`，要求当前行星和机甲建造范围内。光子模式检查产物解锁，切回发电返还整数缓存产物并清空缓存；弹射器仅选择现有启用轨道，0 清除指定轨道，自动换轨可在后续改变目标；增产切换遵循制造配方与矩阵生产模式约束，并同步堆叠研究站。参数、返回值及状态核对见 [生产模式与发射轨道](../skills/automatic-dsp/references/interface/game-control.md#生产模式与发射轨道)。
 
 `placeBelt` 支持两种路径输入。`points` 可包含两个或多个行星局部坐标点；实现会按相邻点调用游戏网格吸附并生成传送带预览。
 

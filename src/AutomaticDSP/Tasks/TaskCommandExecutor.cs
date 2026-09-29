@@ -93,6 +93,7 @@ namespace AutomaticDSP.Tasks
                 case "setsplitterpriority":
                 case "setstationstorage":
                 case "setstationvehicles":
+                case "setstationchargepower":
                 case "transferstationitem":
                 case "setdispenser":
                 case "setdispensercouriers":
@@ -121,6 +122,11 @@ namespace AutomaticDSP.Tasks
                     return;
                 case "setrecipe":
                     ExecuteSetRecipeLocked(task, command, now);
+                    return;
+                case "setrayreceivermode":
+                case "setejectororbit":
+                case "setproliferatormode":
+                    ExecuteProductionSetting(task, command, now);
                     return;
                 case "setlabresearchmode":
                     ExecuteSetLabResearchModeLocked(task, command, now);

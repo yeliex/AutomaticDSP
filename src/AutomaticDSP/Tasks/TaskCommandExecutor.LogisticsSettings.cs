@@ -46,7 +46,7 @@ namespace AutomaticDSP.Tasks
                 return;
             }
             if (command.NormalizedType == "setstationstorage" || command.NormalizedType == "setstationvehicles" ||
-                command.NormalizedType == "transferstationitem")
+                command.NormalizedType == "transferstationitem" || command.NormalizedType == "setstationchargepower")
             {
                 ExecuteStationSetting(command, player, factory, entity, now);
                 return;
