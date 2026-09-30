@@ -28,6 +28,33 @@ namespace AutomaticDSP.Tasks
         {
             switch (command.NormalizedType)
             {
+                case "createdysonorbit":
+                case "editdysonorbit":
+                case "setdysonorbitenabled":
+                case "removedysonorbit":
+                    ExecuteDysonOrbit(command, now);
+                    return;
+                case "createdysonlayer":
+                case "editdysonlayer":
+                case "removedysonlayer":
+                    ExecuteDysonLayer(command, now);
+                    return;
+                case "createdysonnode":
+                case "createdysonframe":
+                case "createdysonshell":
+                case "removedysonnode":
+                case "removedysonframe":
+                case "removedysonshell":
+                    ExecuteDysonStructure(command, now);
+                    return;
+                case "validateblueprint":
+                case "applydysonblueprint":
+                case "exportdysonblueprint":
+                    ExecuteBlueprint(command, now);
+                    return;
+                case "applyfactoryblueprint":
+                    ExecuteFactoryBlueprint(command, now);
+                    return;
                 case "reformterrain":
                     ExecuteReformTerrain(command, now);
                     return;

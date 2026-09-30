@@ -20,6 +20,7 @@ static class Program
             Executions++;Seen[c.Id]=c;
             if(c.Id.StartsWith("fail")) {f(c,CommandFailed,"test",null,n,null);return;}
             if(c.Type=="placeBuilding") {c.BuildObjectId=-1;c.EnteredBuildMode=!c.Background;}
+            if(c.Type=="applyFactoryBlueprint") {c.BuildTargets=new();c.EnteredBuildMode=!c.Background;}
             if(c.Type=="craftInventory"||c.Type=="researchTech") c.ActionIssued=true;
             if(c.Type=="discardInventoryItem"||c.Type=="noop"||Complete.Contains(c.Id)) f(c,CommandSucceeded,null,null,n,new JsonObject());
         };
@@ -35,6 +36,11 @@ static class Program
         q=New();var id=Add(q,C("build","placeBuilding"),C("move","moveTo"));q.Update();
         Check(Seen["build"].Background&&!Seen["build"].EnteredBuildMode&&Seen["move"].OwnsPlayerOrders,"预建释放移动与建造模式");
         Check((string)((JsonObject)q.GetTaskResponse(id)["task"])["status"]==TaskRunning,"预建不冒充整项完成");
+        q=New();id=Add(q,C("blueprint","applyFactoryBlueprint"),C("move","moveTo"));q.Update();
+        Check(Seen["blueprint"].Background&&!Seen["blueprint"].EnteredBuildMode&&Seen["move"].OwnsPlayerOrders,"蓝图预建释放机甲通道");
+        Check((string)((JsonObject)q.GetTaskResponse(id)["task"])["status"]==TaskRunning,"蓝图必须等待实际落成");
+        q=New();Add(q,C("blueprint","applyFactoryBlueprint"),C("after","noop","blueprint"));q.Update();
+        Check(!Seen.ContainsKey("after"),"蓝图显式依赖等待整组落成");Complete.Add("blueprint");q.Update();Check(Seen.ContainsKey("after"),"蓝图落成释放显式依赖");
         q=New();var connect=C("connect","placeSorter");connect.ExtensionData=new Dictionary<string,JToken>{{"input",JObject.Parse("{commandId:'build',slot:0}")}};
         Add(q,C("build","placeBuilding"),connect);q.Update();Check(!Seen.ContainsKey("connect"),"实体引用自动等待落成");Complete.Add("build");q.Update();Check(Seen.ContainsKey("connect"),"落成后释放依赖");
         q=New();var bg=Add(q,C("build","placeBuilding"));Add(q,C("move","moveTo"));q.Update();TaskCommandExecutor.Stops.Clear();q.Cancel(bg);q.Update();

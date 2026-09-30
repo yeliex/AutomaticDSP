@@ -10,15 +10,19 @@ dotnet run --project tests/QueueValidation/QueueValidation.csproj -v quiet
 dotnet run --project tests/QueryValidation/QueryValidation.csproj -v quiet
 dotnet run --project tests/StateSummaryValidation/StateSummaryValidation.csproj -v quiet -p:NoWarn=0649
 dotnet run --project tests/ProductionSettingsValidation/ProductionSettingsValidation.csproj -v quiet
+dotnet run --project tests/DysonValidation/DysonValidation.csproj -v quiet
+dotnet run --project tests/BlueprintValidation/BlueprintValidation.csproj -v quiet
 ```
 
 | 项目 | 覆盖范围 | 前置条件与边界 |
 | --- | --- | --- |
 | CapabilityValidation | 40 项：权限、提示身份、取消、传送带反转边界和垃圾入口 | 链接真实 Mod 源文件；假对象仅提供原生状态和回调 |
-| QueueValidation | 24 项：调度通道、依赖及机甲互斥，包含地形与植被操作 | 链接真实调度器，隔离命令执行与历史存储；需先构建 Mod 提供 Newtonsoft.Json.dll |
+| QueueValidation | 28 项：调度通道、依赖及机甲互斥，包含地形、植被与工厂蓝图落成等待 | 链接真实调度器，隔离命令执行与历史存储；需先构建 Mod 提供 Newtonsoft.Json.dll |
 | QueryValidation | 2 项：真实查询器的离线查询与序列化 | 需先构建 Mod，并安装游戏；加载 AutomaticDSP.dll 和本机游戏程序集。可传仓库根目录参数；游戏路径目前固定在测试入口中 |
 | StateSummaryValidation | 10 项：垃圾分类、建筑名称、回收槽过滤、截断计数、垃圾块数与物品数区分、按需明细 | 链接真实垃圾与建造摘要实现，使用隔离数据 |
 | ProductionSettingsValidation | 27 项：科技、组件、配方、参数、距离、缓存返还、幂等和失败不修改状态 | 链接真实生产设置实现；需先构建 Mod 提供 Newtonsoft.Json.dll；同步与返还通过记录假原生方法调用验证 |
+| DysonValidation | 26 项：科技锁、严格类型、轨道与层 ID、默认轨道保护、有帆删除拒绝、原生半径／层数拒绝及编辑顺序 | 链接真实轨道与球层命令；假原生方法只记录调用，不证明实际几何或物资推进 |
+| BlueprintValidation | 12 项：真实程序集的蓝图压缩边界、解压大小上限与显式类型映射 | 需先构建 Mod 并安装游戏；不校验蓝图内部布局或实机落点 |
 
 这些检查不证明原生物理、实际吞吐或玩家 UI 操作，也不能替代堆叠同步、光子产出及弹射运行的实机验证。
 
@@ -54,6 +58,22 @@ dotnet run --project tests/ProductionSettingsValidation/ProductionSettingsValida
 尚未实机覆盖：实际水面填海、10×10／纬度分段、增产地基、缺地基／缺沙土、科技未解锁、气态星、手持非地基、满背包还原、矿脉掩埋／露出、战斗基地／基地坑及玩家 UI 并发。保留原生约束不等于这些分支已验证。
 
 ## 手动实机验收
+
+### 戴森设计与蓝图
+
+使用独立验收档，先另存基线。查询当前恒星、解锁条件、现有轨道和层；只在明确选择的新轨道／测试层执行，不能用固定 ID 猜测并删除已有结构。
+
+1. 创建、修改、停用／启用空云轨道并读回半径与四元数；检查非法半径、内部轨道 ID、默认轨道保护后状态未变，最后删除测试轨道。
+2. 新建球层，在允许应力纬度内创建节点、两种框架与闭环壳面；核对重复、间距、壳内节点等原生拒绝。编辑层朝向，再逐项删除框架、节点、壳面与测试层，核对关联结构。
+3. 记录公开样本来源、许可、原生类型和版本。对工厂与戴森蓝图执行只读校验、类型不匹配与损坏串拒绝；戴森样本导入空层后导出，再导入另一个空层，核对节点／框架／壳面数量、坐标和朝向。非空目标应拒绝。
+4. 工厂蓝图选择范围内空地并备齐材料。单建筑和带分拣器的多建筑布局均需等无人机落成，再核对物品扣减、组件、配方及两端实体连接；检查重复落点的原生碰撞拒绝和远距离拒绝。不要用任务进入 RUNNING 代替实际下达或建成。
+5. 通过 HTTP 保存确认 `saved:true`，退出并确认进程结束，重新加载后比对设计与工厂实体。保存、加载、退出不使用 UI。
+
+已有实机覆盖：云轨道编辑闭环、球层与节点／框架／壳面创建删除、重复和几何拒绝、公开单层戴森样本实际应用与原生导出往返、公开工厂样本原生解析、小型工厂蓝图实际建成与连接／配方／扣料核对。原生预览异常需终止命令并返回 `native_blueprint_error`，不能持续重试。
+
+尚未实机覆盖：整球／全部层／云轨道蓝图应用、大型工厂蓝图整体施工、多区域跨纬度／极区／堆叠布局、玩家 UI 并发、工厂缺料与未解锁存档分支、实际火箭发射／太阳帆吸收直至完整球竣工。科技和数量限制的离线测试不能替代这些覆盖；设计 `completion:design` 也不代表实际物资建设完成。地基和覆盖粘贴明确不支持。
+
+### 其他能力
 
 以下为可重复使用的验收方法，没有对应的独立自动化脚本。记录当次基线、操作和结果到本地报告；不要把单次存档坐标、库存、tick 或任务流水写入本说明。
 

@@ -16,6 +16,7 @@ namespace AutomaticDSP.Tasks
                 case "researchtech": return "research";
                 case "placebuilding":
                 case "placebelt":
+                case "applyfactoryblueprint":
                 case "placesorter": return "construction";
                 case "discardinventoryitem":
                 case "pickuptrash":

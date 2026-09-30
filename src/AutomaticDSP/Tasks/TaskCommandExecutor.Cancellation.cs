@@ -30,6 +30,7 @@ namespace AutomaticDSP.Tasks
                 case "removeentity":
                 case "placebuilding":
                 case "placebelt":
+                case "applyfactoryblueprint":
                 case "placesorter":
                     GameMain.mainPlayer?.ClearOrders();
                     return;

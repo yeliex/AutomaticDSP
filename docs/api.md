@@ -626,6 +626,11 @@ query ObserveStorage {
 - `placeBuilding`
 - `placeBelt`
 - `placeSorter`
+- `applyFactoryBlueprint`：原生工厂蓝图空地粘贴，等待全部建筑实际落成。
+- `createDysonOrbit` / `editDysonOrbit` / `setDysonOrbitEnabled` / `removeDysonOrbit`
+- `createDysonLayer` / `editDysonLayer` / `removeDysonLayer`
+- `createDysonNode` / `removeDysonNode` / `createDysonFrame` / `removeDysonFrame` / `createDysonShell` / `removeDysonShell`
+- `validateBlueprint` / `applyDysonBlueprint` / `exportDysonBlueprint`
 - `reformTerrain`：指定单次原生笔刷的整平／填海或地形还原。
 - `collectVegetation`：收取指定现场植被到原生植被收藏。
 - `plantVegetation`：从收藏种植指定原型，执行原生碰撞校验。
@@ -884,6 +889,81 @@ query ObserveStorage {
 `nearbyItemProduced` 当前第一版按当前行星工厂产出统计判断，不做半径内空间归因；需要空间归因时应先通过 `/game/state` 查询局部实体状态。
 
 完整行星内铁块生产线任务示例见 `docs/examples/planetary-iron-line.md`。
+
+## 戴森云、戴森球与原生蓝图
+
+以下命令通过 `POST /tasks` 提交。设计与蓝图校验命令属于 `instruction` 通道；工厂蓝图属于 `construction`，预建下达后释放机甲通道，等待全部实体落成。恒星与布局由调用方决定，Mod 不选址、不规划结构、不生成生产线。
+
+### 云轨道与球层
+
+所有命令要求有效整数 `starId`。云操作需要 `history.dysonSphereSystemUnlocked`，球层和结构需要 `history.dysonSphereLayerPanelUnlocked`。访问未初始化恒星时，创建／编辑轨道、球层和蓝图入口可能通过原生方法初始化该恒星的戴森对象。
+
+| 命令 | 参数 |
+| --- | --- |
+| `createDysonOrbit` | `radius`、`inclination`、`longitude` |
+| `editDysonOrbit` | `orbitId`、`radius`、`inclination`、`longitude` |
+| `setDysonOrbitEnabled` | `orbitId`、布尔 `enabled` |
+| `removeDysonOrbit` | `orbitId` |
+| `createDysonLayer` | `radius`、`inclination`、`longitude` |
+| `editDysonLayer` | `layerId`、`inclination`、`longitude`；不接受 `radius` |
+| `removeDysonLayer` | `layerId`；连同层内结构一起原生拆除 |
+
+`radius` 使用游戏轨道半径单位；倾角 `inclination` 为 0–180 度，升交点经度 `longitude` 为 0–360 度。数值必须有限，不接受数字字符串。朝向使用原生面板的 `Quaternion.Euler(0,-longitude,-inclination)`，层朝向修改保留原生过渡过程；原生 UI 不支持改变已有球层半径。半径按原生恒星范围、行星避让与层间距检查，失败 `invalid_orbit` 的 `result.nativeCondition` 保留原生数值（-1 层间距、-2 行星避让、-3 半径范围）。轨道最多 20 条、球层最多 10 层。
+
+轨道 ID 只接受 1–20，不暴露内部拆除轨道。默认轨道 1 不能停用或删除；有太阳帆的轨道不能直接删除，返回 `orbit_not_empty`，可先停用并等待原生帆寿命结束。停用不清除太阳帆。弹射器目标仍通过 `setEjectorOrbit` 设置。垂直发射井使用游戏原生节点分配；不提供沙盒加速或虚构的节点指定接口。
+
+### 节点、框架与壳面
+
+以下命令都需要 `starId`、`layerId`，目标层必须存在。
+
+| 命令 | 参数 |
+| --- | --- |
+| `createDysonNode` | `position:[x,y,z]`：层局部坐标中的非零方向，归一化到层半径；可选 `protoId` |
+| `createDysonFrame` | `nodeAId`、`nodeBId`；可选布尔 `euler`（默认 false，测地线）；可选 `protoId` |
+| `createDysonShell` | `nodeIds`：至少三个不同节点按闭环顺序排列，末尾不重复首节点；可选 `protoId` |
+| `removeDysonNode` | `nodeId`；连带移除关联框架与壳面 |
+| `removeDysonFrame` | `frameId`；连带移除使用该框架的壳面 |
+| `removeDysonShell` | `shellId` |
+
+`protoId` 默认 0，范围取游戏原生编辑器样式数（当前节点 0、框架 0–2、壳面 0–6）。节点复用原生应力纬度、间距、框架和壳面碰撞检查；框架复用原生长度、交叉和应力检查；壳面必须有实际框架闭环，保留原生跨度、内部节点及重复壳面限制。拒绝返回 `native_validation_failed` 与 `nativeCondition`，如 `TooClose`、`StressExceed`、`InShell`、`NoCycle`、`OthersInCycle`、`Exist`。
+
+球层、结构和戴森蓝图的 `SUCCEEDED` 仅表示设计编辑完成，结果标记 `completion:"design"`。不会补发小型运载火箭、太阳帆或修改结构点、细胞点；实际建设继续由原生发射与吸收系统推进。删除保留原生回收及转太阳帆等副作用。
+
+查询使用通用原始对象，不增加规划摘要：
+
+```graphql
+{
+  history { dysonSphereSystemUnlocked dysonSphereLayerPanelUnlocked dysonNodeLatitude }
+  data { dysonSpheres {
+    starData { id name }
+    swarm { orbits { id radius orbitRotation enabled } }
+    layersIdBased { id orbitRadius orbitRotation targetOrbitRotation nodeCount frameCount shellCount
+      nodePool { id pos sp spMax }
+      framePool { id spA spB spMax }
+      shellPool { id cellPoint cellPointMax }
+    }
+  } }
+}
+```
+
+池中可能有空槽；按实际 ID 筛选，确认结构／细胞点、发射与供料，不能用设计节点数量代替竣工或发电量。
+
+### 原生蓝图字符串
+
+`BLUEPRINT:` 是工厂蓝图，`DYBP:` 是戴森设计蓝图。直接提交完整原生字符串到 `blueprint`；最多 16 MiB 字符，压缩体解压最多 64 MiB，不读取客户端路径、剪贴板或远程 URL。参数 `blueprintType` 的 `sphere`、`layers`、`layer`、`swarm` 分别对应整球、全部球层、单球层、云轨道。
+
+| 命令 | 参数与结果 |
+| --- | --- |
+| `validateBlueprint` | `blueprint`；戴森类型还须显式 `blueprintType`。不改设计，不代表落点有效 |
+| `exportDysonBlueprint` | `starId`、`blueprintType`；单层还需 `layerId`。结果 `blueprint` 为原生字符串 |
+| `applyDysonBlueprint` | `starId`、`blueprintType`、`blueprint`；单层还需已有 `layerId` |
+| `applyFactoryBlueprint` | `blueprint`、当前行星 `position:[x,y,z]`、`rotation`（0/90/180/270）；可选 `planetId` 限定当前行星 |
+
+工厂只读校验调用原生完整解析，`validationScope:"nativeParse"`；戴森只读校验检查原生头、签名、类型、已解锁应力纬度与有界解压，`validationScope:"headerSignatureLatitudeAndCompression"`。两者均返回 `placementValidated:false`。戴森原生完整解析会直接修改目标，不能把它伪装成只读预览；通过只读检查仍可能在应用时失败。
+
+戴森应用保留原生粘贴前置限制：单层目标必须没有节点，整球／全部球层目标必须没有任何节点；拒绝 `target_not_empty`。云轨道导入保留原生替换规则，有帆旧轨道可能保留并停用。原生导入不是事务，结果明确 `atomic:false`、`stateMayHaveChanged:true`；失败时先查询现场与原任务，不应盲目重试。应用前另存基线，导入后核对实际层、朝向、节点和结构点。
+
+工厂应用复用原生蓝图区域检查、预览、碰撞／连接检查及预建下达。当前限定空地粘贴，不覆盖已有对象，不支持含地基数据的蓝图；分别返回 `unsupported_blueprint_overlap`、`unsupported_blueprint_reform`。全部建筑须在机甲建造范围内，蓝图规模、建筑、配方须已解锁，背包加手持须备齐建筑。缺料返回 `not_enough_items`，不会绕过科技、地形或碰撞。任务等待所有预建变为实际实体后才成功，返回 `entityIds`；超时、取消或原生部分下达失败不会自动撤销预建。大蓝图应由外部 Agent 按设计准备材料和分段方案，接口不自动切分或优化。
 
 ## 默认建造状态摘要
 

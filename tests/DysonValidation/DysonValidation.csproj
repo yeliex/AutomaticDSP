@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/AutomaticDSP/Tasks/TaskCommandExecutor.Dyson.cs" Link="Dyson.cs" />
+    <Compile Include="../../src/AutomaticDSP/Serialization/JsonObject.cs" Link="JsonObject.cs" />
+    <Reference Include="Newtonsoft.Json" HintPath="../../src/AutomaticDSP/bin/Debug/net472/Newtonsoft.Json.dll" />
+  </ItemGroup>
+</Project>
