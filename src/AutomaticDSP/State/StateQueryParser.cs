@@ -124,6 +124,14 @@ namespace AutomaticDSP.State
                 }
             }
 
+            if (name == "statistics")
+            {
+                queryField.AstroFilter = StatisticsIntArgument(field.Arguments, "astroFilter", 0);
+                queryField.TimeLevel = StatisticsIntArgument(field.Arguments, "timeLevel", 0);
+                if (queryField.AstroFilter < -1 || queryField.TimeLevel < 0 || queryField.TimeLevel > 5)
+                    throw new StateQueryParseException("statistics 的 astroFilter 必须为 -1、0 或有效天体 ID，timeLevel 必须为 0 到 5。");
+            }
+
             if (name == "surface")
             {
                 var position = new UnityEngine.Vector3(CoordinateArgument(field.Arguments, "x"),
@@ -205,6 +213,15 @@ namespace AutomaticDSP.State
             }
 
             return null;
+        }
+
+        private static int StatisticsIntArgument(GraphQLArguments arguments, string name, int fallback)
+        {
+            if (arguments?.Items != null)
+                foreach (var argument in arguments.Items)
+                    if (argument.Name.StringValue == name)
+                        return IntArgument(arguments, name) ?? throw new StateQueryParseException("statistics 的 " + name + " 必须为整数。");
+            return fallback;
         }
 
         private static List<StateQueryFilter> ParseWhereFilters(GraphQLArguments arguments)

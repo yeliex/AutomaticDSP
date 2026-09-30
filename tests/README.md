@@ -12,6 +12,7 @@ dotnet run --project tests/StateSummaryValidation/StateSummaryValidation.csproj 
 dotnet run --project tests/ProductionSettingsValidation/ProductionSettingsValidation.csproj -v quiet
 dotnet run --project tests/DysonValidation/DysonValidation.csproj -v quiet
 dotnet run --project tests/BlueprintValidation/BlueprintValidation.csproj -v quiet
+dotnet run --project tests/StatisticsValidation/StatisticsValidation.csproj -v quiet
 ```
 
 | 项目 | 覆盖范围 | 前置条件与边界 |
@@ -23,12 +24,15 @@ dotnet run --project tests/BlueprintValidation/BlueprintValidation.csproj -v qui
 | ProductionSettingsValidation | 27 项：科技、组件、配方、参数、距离、缓存返还、幂等和失败不修改状态 | 链接真实生产设置实现；需先构建 Mod 提供 Newtonsoft.Json.dll；同步与返还通过记录假原生方法调用验证 |
 | DysonValidation | 26 项：科技锁、严格类型、轨道与层 ID、默认轨道保护、有帆删除拒绝、原生半径／层数拒绝及编辑顺序 | 链接真实轨道与球层命令；假原生方法只记录调用，不证明实际几何或物资推进 |
 | BlueprintValidation | 12 项：真实程序集的蓝图压缩边界、解压大小上限与显式类型映射 | 需先构建 Mod 并安装游戏；不校验蓝图内部布局或实机落点 |
+| StatisticsValidation | 参数与别名、时间窗口、产消和运输历史环形槽、功率及研究换算、原生统计类型聚合 | 需先构建 Mod 并安装游戏；不连接对局，不能替代实机缓存读取及面板对照 |
 
 这些检查不证明原生物理、实际吞吐或玩家 UI 操作，也不能替代堆叠同步、光子产出及弹射运行的实机验证。
 
 ## 实机脚本
 
-脚本会修改当前对局。通过 Mod 加载独立测试档，先保存基线，再查询并选择当前存档的坐标和实体。参数不要复用其他存档中的固定 ID。接口见 [API 文档](../docs/api.md)。
+`StatisticsReadOnlyValidation.ps1` 为只读例外：在已有工厂的当前行星核对同批次的面板适配值与原生统计、缓存状态、全局进出口 null 和无效天体错误。脚本不创建或加载存档、不打开面板、不提交游戏任务。建议使用刚加载且尚未打开分析面板的测试档验证未计算缓存；非零星际运输和实际戴森施工仍需相应存档另行验收。
+
+以下操作类脚本会修改当前对局。通过 Mod 加载独立测试档，先保存基线，再查询并选择当前存档的坐标和实体。参数不要复用其他存档中的固定 ID。接口见 [API 文档](../docs/api.md)。
 
 ### 增产模式
 

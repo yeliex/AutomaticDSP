@@ -948,6 +948,14 @@ query ObserveStorage {
 
 池中可能有空槽；按实际 ID 筛选，确认结构／细胞点、发射与供料，不能用设计节点数量代替竣工或发电量。
 
+### 分析面板统计
+
+`POST /game/state` 支持 `statistics(astroFilter:0,timeLevel:0)`。`astroFilter` 为 -1 全局、0 当前天体、行星 ID 或恒星 ID×100；`timeLevel` 0..5 对应 1 分钟、10 分钟、1 小时、10 小时、100 小时及累计。
+
+按需选择 `products`、`power`、`research`、`dyson`，获取原生口径的产消、进出口、参考产能、缓存库存、供需功率、研究量及戴森建设统计。历史曲线显式请求，支持现有列表过滤和分页。无需打开面板；查询不会推进游戏、创建工厂或戴森对象，也不执行或排队刷新附加统计。库存及参考产能缓存的新鲜度通过 `productionExtraInfo` 明确为未知，不能仅凭缓存零值判断物品或产能不存在。
+
+完整字段、单位、范围边界和示例见 [统计查询契约](../skills/automatic-dsp/references/interface/statistics.md)。全局进出口为 null；参考产能与实际产量、电力供需与实际耗能、星际货槽库存与运输量分别表达。`rawStatistics` 和 `data.statistics` 保留原始入口；旧版通过扩展根 `statistics` 读取原始字段的调用需要迁移到这两个入口。
+
 ### 原生蓝图字符串
 
 `BLUEPRINT:` 是工厂蓝图，`DYBP:` 是戴森设计蓝图。直接提交完整原生字符串到 `blueprint`；最多 16 MiB 字符，压缩体解压最多 64 MiB，不读取客户端路径、剪贴板或远程 URL。参数 `blueprintType` 的 `sphere`、`layers`、`layer`、`swarm` 分别对应整球、全部球层、单球层、云轨道。

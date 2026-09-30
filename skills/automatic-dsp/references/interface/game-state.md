@@ -293,6 +293,8 @@ query FindPrototypes {
 
 ## 产量和功率计量
 
+常规产线分析优先使用 [statistics 分析面板查询](statistics.md)，直接读取明确范围和原生时间窗口的产消、进出口、仓储、供需功率、研究及戴森球统计。以下原始入口保留用于核对底层字段或自定义采样；`rawStatistics` 和 `data.statistics` 返回原始统计系统。
+
 在 `production.factoryStatPool` 中用行星 `factoryIndex` 定位工厂，再通过物品索引映射读取对应统计。
 
 通过 `productIndices[itemId]` 定位 `productPool`；`total[6]` 和 `total[13]` 分别是 `waitUntil` 使用的生产、消耗累计值。计算连续速率时，用同一统计范围内的累计量差除以游戏时间差。

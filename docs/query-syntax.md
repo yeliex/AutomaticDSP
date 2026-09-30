@@ -109,6 +109,8 @@ query Explore {
 - `factoryDetails` / `localFactoryDetails`
 - `factories`
 - `production`
+- `statistics`（[原生分析面板统计](../skills/automatic-dsp/references/interface/statistics.md)，支持 `astroFilter`、`timeLevel` 参数）
+- `rawStatistics`（原始统计系统，等同于原生 `GameMain.statistics`）
 - `power`
 - `research` / `technology`
 - `techs`

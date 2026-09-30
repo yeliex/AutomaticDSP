@@ -199,8 +199,9 @@ namespace AutomaticDSP.State
             var result = new JsonObject();
             foreach (var field in plan.Fields)
             {
-                var source = ResolveRootSource(field.Name, gameTick);
-                result[field.ResponseName] = ResolveQueryValue(source, field, 0);
+                result[field.ResponseName] = field.Name == "statistics"
+                    ? CapturePanelStatistics(field, gameTick)
+                    : ResolveQueryValue(ResolveRootSource(field.Name, gameTick), field, 0);
             }
 
             return new JsonObject
@@ -262,6 +263,8 @@ namespace AutomaticDSP.State
                     return GameMain.data?.factories;
                 case "production":
                     return GameMain.statistics?.production;
+                case "rawStatistics":
+                    return GameMain.statistics;
                 case "power":
                     return GameMain.localPlanet?.factory?.powerSystem;
                 case "research":
@@ -334,6 +337,8 @@ namespace AutomaticDSP.State
                     QueryRoot("localFactoryDetails", "object", "Alias of factoryDetails."),
                     QueryRoot("factories", "list", "GameData factories array."),
                     QueryRoot("production", "object", "Production statistics."),
+                    QueryRoot("statistics", "object", "原生分析面板统计；astroFilter: -1 全局、0 当前天体、行星 ID 或恒星 ID×100；timeLevel: 0..5。"),
+                    QueryRoot("rawStatistics", "object", "原始 GameStatData；也可通过 data.statistics 读取。"),
                     QueryRoot("power", "object", "Current local planet power system."),
                     QueryRoot("research", "object", "Current technology research state."),
                     QueryRoot("technology", "object", "Alias of research."),
