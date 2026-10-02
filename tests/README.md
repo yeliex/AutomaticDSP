@@ -19,7 +19,7 @@ dotnet run --project tests/StatisticsValidation/StatisticsValidation.csproj -v q
 | --- | --- | --- |
 | CapabilityValidation | 40 项：权限、提示身份、取消、传送带反转边界和垃圾入口 | 链接真实 Mod 源文件；假对象仅提供原生状态和回调 |
 | QueueValidation | 28 项：调度通道、依赖及机甲互斥，包含地形、植被与工厂蓝图落成等待 | 链接真实调度器，隔离命令执行与历史存储；需先构建 Mod 提供 Newtonsoft.Json.dll |
-| QueryValidation | 2 项：真实查询器的离线查询与序列化 | 需先构建 Mod，并安装游戏；加载 AutomaticDSP.dll 和本机游戏程序集。可传仓库根目录参数；游戏路径目前固定在测试入口中 |
+| QueryValidation | 真实查询器的离线查询与序列化；手搓缺玩家／制造器、太空请求校验与任务跟踪 | 需先构建 Mod，并安装游戏；加载 AutomaticDSP.dll 和本机游戏程序集。手搓夹具不模拟原生物资消耗或制造推进。可传仓库根目录参数；游戏路径目前固定在测试入口中 |
 | StateSummaryValidation | 10 项：垃圾分类、建筑名称、回收槽过滤、截断计数、垃圾块数与物品数区分、按需明细 | 链接真实垃圾与建造摘要实现，使用隔离数据 |
 | ProductionSettingsValidation | 27 项：科技、组件、配方、参数、距离、缓存返还、幂等和失败不修改状态 | 链接真实生产设置实现；需先构建 Mod 提供 Newtonsoft.Json.dll；同步与返还通过记录假原生方法调用验证 |
 | DysonValidation | 26 项：科技锁、严格类型、轨道与层 ID、默认轨道保护、有帆删除拒绝、原生半径／层数拒绝及编辑顺序 | 链接真实轨道与球层命令；假原生方法只记录调用，不证明实际几何或物资推进 |
@@ -84,5 +84,6 @@ dotnet run --project tests/StatisticsValidation/StatisticsValidation.csproj -v q
 | 射线接收与弹射设置 | 切换发电／光子模式，读回 `productId`；设置有效轨道与自动换轨，验证省略开关保留现值、重复设置及非法参数拒绝后状态不变，最后恢复设置 | 已有设置实机记录；实际光子产出、弹射运行和非空缓存返还尚未实机覆盖，缓存返还仅有离线边界验证 |
 | 运输站充电上限 | 设置原生范围内的上限，读回 `workEnergyPerTick`；检查幂等、越界、步长、小数与错误类型拒绝后状态不变 | 已有星际站实机记录；不代表行星站成功路径或运输吞吐已验证 |
 | 导航与界面并行 | 在 `navigateTo` 期间打开科研、星图或背包／制造窗口，连续读取阶段和 `player.flight`，确认输入持续生效；核对到达及 `appliedTicks`，不能仅凭 RUNNING 或惯性判断成功 | 科研、星图和正常视图移动接管已有实机记录；背包／制造、文本输入及截图模式仍需逐项验证 |
+| 太空手搓 | 在无本地行星的 Sail 航行期间提交 `craftInventory(waitForCompletion:true)`，核对原生任务完成、材料减少和产物增加 | 已实机验证铜矿制造铜块及航行并行；不代表所有配方、满包和任务取消分支均已覆盖 |
 
 导航验收还需检查：正常游戏视图中的移动、停止及显式手动导航允许接管；原任务超时不延长；游戏真正暂停时不要求物理运动推进。

@@ -978,13 +978,8 @@ namespace AutomaticDSP.Tasks
 
         private void ExecuteCraftInventoryLocked(CommandState command, DateTimeOffset now)
         {
-            if (!TryGetPlayer(out var player, out var errorCode, out var errorMessage))
-            {
-                finishCommand(command, CommandFailed, errorCode, errorMessage, now, null);
-                return;
-            }
-
-            var forge = player.mecha?.forge;
+            // 原生机甲制造可在太空推进，不适用工厂操作的本地行星校验。
+            var forge = GameMain.mainPlayer?.mecha?.forge;
             if (forge == null)
             {
                 finishCommand(command, CommandFailed, "game_not_ready", "Player forge is not available.", now, null);
@@ -1004,8 +999,8 @@ namespace AutomaticDSP.Tasks
                     out var craftCount,
                     out var requestedItemId,
                     out var requestedItemCount,
-                    out errorCode,
-                    out errorMessage,
+                    out var errorCode,
+                    out var errorMessage,
                     out var errorResult))
             {
                 finishCommand(command, CommandFailed, errorCode, errorMessage, now, errorResult);
