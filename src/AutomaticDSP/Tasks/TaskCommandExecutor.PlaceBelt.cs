@@ -303,6 +303,13 @@ namespace AutomaticDSP.Tasks
                     return false;
                 }
 
+                // 显式点列也必须使用实体实际开放的端口，避免原生校验索引无效插槽。
+                if ((startEndpoint != null && !TryResolveBeltEndpoint(tool, factory, startEndpoint, out _, out errorMessage)) ||
+                    (endEndpoint != null && !TryResolveBeltEndpoint(tool, factory, endEndpoint, out _, out errorMessage)))
+                {
+                    return false;
+                }
+
                 foreach (var point in rawPoints)
                 {
                     if (pathPoints.Count > 0 &&
@@ -609,16 +616,10 @@ namespace AutomaticDSP.Tasks
                 return false;
             }
 
-            if (endpoint.HasPosition)
-            {
-                position = endpoint.Position;
-                return true;
-            }
-
             var objectPose = tool.GetObjectPose(endpoint.EntityId);
             if (tool.ObjectIsBelt(endpoint.EntityId))
             {
-                position = objectPose.position;
+                position = endpoint.HasPosition ? endpoint.Position : objectPose.position;
                 return true;
             }
 
@@ -635,7 +636,9 @@ namespace AutomaticDSP.Tasks
                 return false;
             }
 
-            position = objectPose.position + objectPose.rotation * ports[endpoint.Slot].position;
+            position = endpoint.HasPosition
+                ? endpoint.Position
+                : objectPose.position + objectPose.rotation * ports[endpoint.Slot].position;
             return true;
         }
     }
