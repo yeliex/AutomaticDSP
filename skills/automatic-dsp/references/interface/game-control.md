@@ -251,19 +251,25 @@ HTTP 层错误常用 `{"error":{"code":"...","message":"..."}}`；执行失败�
 | --- | --- | --- |
 | `entityFastFillIn` | 目标实体；`fromPackage` 默认 true | 原生快速填充；物品种类与数量由游戏决定，读取 `movedItems` |
 | `entityFastTakeOut` | 目标实体；`toPackage` 默认 true | 原生快速取出；可能涉及多个物品，读取 `movedItems`、`full` |
-| `transferStorageItem` | 目标储物实体、`itemId`、正整数 `count`；`direction: "fromStorage"/"toStorage"`，默认前者 | 指定物品转移；结果为 `requestedCount`、`movedCount`、`inventoryCount`、`storageCount` |
+| `transferStorageItem` | 目标储物仓实体（不含储液罐）、`itemId`、正整数 `count`；`direction: "fromStorage"/"toStorage"`，默认前者 | 指定物品转移；结果为 `requestedCount`、`movedCount`、`inventoryCount`、`storageCount` |
 | `craftInventory` | 推荐 `itemId`、`count`；或 `recipeId`、`count` | 按物品调用时 count 为产物数量；仅按配方时 count 为配方执行次数 |
 | `removeForgeTask` | 当前 `forge.tasks` 的 `index` 与 `recipeId` | 原生取消制造及关联父/子任务并返还材料；索引或配方变化返回 `queue_changed` |
 
 快速取放由原生逻辑决定物品与数量；储物实体的指定物品取放使用 `transferStorageItem`。该命令移动数量大于零即可成功，实际数量读取 `movedCount`；没有转移时返回 `no_item_transferred`。
 
+`fromPackage` 只选择物品来源，不代表一次填满。手持与背包填充都可能只转入少量物品，按每次 `movedItems` 和输入槽、库存变化核对数量，不假定手持只允许填入一件。
+
 `entityFastFillIn` 和 `entityFastTakeOut` 没有 `count` 参数，不能给它们附加数量并假定生效。需要限制生产建筑的投料数量时，先确认手中为空，用 `transferInventoryItem {from:"package",to:"hand",itemId,count}` 拆出最多所需数量，再在同一有序任务中调用 `entityFastFillIn {entityId,fromPackage:false}`。实际填入可能少于手中数量，查询 `movedItems` 和手中余量，按需用 `transferInventoryItem` 将余量退回背包。此方式限制投料上限，不保证设备接收足量。
+
+当前原生 `PlanetFactory.EntityFastFillIn` 的燃料发电站分支，每次手持填充最多 1 件、背包填充最多 2 件；手中或背包有更多燃料也不会在一次调用中全部投入。按 `movedCount`、手中／背包余量和各机组实际燃料缓存确认补给，定量均衡多台机组时逐批执行，不能将拆出的数量当作已填入数量。这是该原生快捷方法的批次限制，不代表所有建筑或其他游戏投料操作都采用相同批次。
 
 储物仓和运输站货槽分别通过 `transferStorageItem`、`transferStationItem` 指定数量取回；生产建筑成品暂没有直接指定数量取回接口，`entityFastTakeOut(toPackage:false)` 也不表示限量。不要将储物仓接口套用到制造设施，或为了取少量成品而切换配方清空缓存。
 
 普通运输站的 `entityFastFillIn` 会补充运输工具，不能视为指定货槽投料。传送带可用 `fromPackage:false` 放入手中真实物品，原生单次投入数量读取 `movedCount`。输入站端口的 `storageIdx` 可能随接收物品更新，它是原生货槽缓存，不是用户设置的输入过滤。
 
 `craftInventory` 使用原生递归材料判定，缺料返回 `missing_item` 和 `missing` 列表，未解锁返回 `recipe_locked`。`waitForCompletion` 默认 false，成功仅表示原生入队，结果为 `action: enqueued, completed: false`。设为 true 时后台跟踪本次原生制造任务剩余次数，制造完成后成功；不以背包净增判断，避免产物被并行操作消耗导致误报。等待结果含 `remainingCount`、`forgeTotalTime`；原生任务在未完成时被移除返回 `craft_interrupted`。
+
+`craftInventory` 只要求玩家的原生机甲制造器可用，不要求本地行星；可在太空下达，也可让 `waitForCompletion:true` 的完成跟踪跨越起飞、航行和着陆。仍由原生制造器检查配方、材料并推进制造，需预留机甲能源和递归中间产物的背包空间。
 
 `removeForgeTask` 按执行时的队列校验索引和配方；即使配方相同也应在移除前刷新数量、父子关系和进度。取消子任务可能连带取消父任务及后续缺料任务，退款遵守原生背包容量及掉落规则。移除后重读整个 `forge.tasks`，不能继续沿用旧索引。
 
@@ -282,6 +288,8 @@ HTTP 层错误常用 `{"error":{"code":"...","message":"..."}}`；执行失败�
 
 `navigateTo.useWarp=true` 允许在距离、航向、科技、能量和翘曲器满足条件时自动启动曲速，接近目标时退出；不可用时继续普通航行。结果 `useWarp` 表示请求选项，`warpUsed` / `warpStatus` 表示实际使用情况；直接 `warp` 命令不满足前置条件时会失败。
 
+导航规划发现燃烧室各格为空且剩余燃料能量低于 10000 J 时，会调用原生 `Mecha.AutoReplenishFuelAll` 从背包补燃料，不更改自动补充设置。导航可能因此消耗原计划给建筑启动的燃料；需要保留的少量投料可先用 `transferInventoryItem` 拆到手中，抵达后用 `entityFastFillIn(fromPackage:false)`，按实际转移量核对。不要把采集成功时的背包数量当成导航后仍可投料的数量。
+
 `navigateTo` 在科研等全屏界面、文本输入、截图模式或星图打开期间继续逐 tick 驱动原生移动动作，界面按键不视为移动接管；原超时继续生效，不反复重建任务。游戏暂停时不会推进物理运动。正常游戏视图中的移动、停止，以及显式建造或手动导航订单仍返回 `manual_override`。低层固定时长飞行输入保持原有界面中断行为；燃料不足、会话变化和真正的手动接管不自动重试。
 
 `arrivalDistance` 记录太空点首次判定到达时的最近距离，尚未到达或目标为行星时为 null。`distanceToTarget` 是终态实际距离，可能因退出曲速的惯性超过 tolerance。
@@ -291,6 +299,8 @@ fly 的 direction 是本行星局部方向，水平输入投影到当前位置�
 `moveTo` 使用本行星局部坐标。宇宙位置与速度查询 `player.uPosition` / `player.uVelocity`，坐标分量保持双精度；目标行星的 `uPosition` 随游戏时间变化。按目标类型核对上表中的完成条件。
 
 取消、超时或命令结束仅撤销本命令输入，不停速、不强制降落、不自动退出曲速。终态 result 返回真实 movementState、planetId、局部与宇宙位置、宇宙速度、warpCommand、warpState、coreEnergy 及 appliedTicks。键盘移动、曲速/加速键、原生移动订单、导航或建造接管会中止输入并返回 manual_override。默认输入租期为 120 秒，显式 timeoutSeconds 可覆盖。
+
+加载存档或地形改造后，若导航以 `manual_override` 且 `appliedTicks: 0` 立即结束，先检查原生订单及界面是否仍处于地表改造或建造模式。通过 Computer Use 确认并退出残留工具与建造模式，再验证导航；退出可能需要先取消工具，再退出建造模式。
 
 科技不足为 tech_locked；能源不足为 insufficient_energy；曲速缺翘曲器为 missing_warper。曲速入口由原生耗能和消费方法执行，自动补充遵守原有设置。拒绝前置条件不会主动消耗翘曲器。正常运行中的产线、手搓、燃烧室仍可能改变能量与库存。
 
@@ -314,7 +324,7 @@ fly 的 direction 是本行星局部方向，水平输入投影到当前位置�
 | `removeTechInQueue` | `index`，当前队列索引；推荐同时传 `techId` | 原生移除并整理队列；指定 techId 时校验目标，变化返回 `queue_changed` |
 | `buyoutTech` | `techId` | 使用跨存档元数据，需用户明确要求；与正常研究材料不同 |
 | `setLabResearchMode` | 实体目标；可选 `techId`，默认当前研究科技 | 设置矩阵研究站研究模式，并同步相邻研究站函数 |
-| `setRecipe` | 实体目标、`recipeId` | 对支持配方的制造组件或研究站设配方；研究站用于矩阵生产模式 |
+| `setRecipe` | 实体目标、正整数 `recipeId` | 对支持配方的制造组件或研究站设配方；研究站用于矩阵生产模式。不能用 0 清空或暂停配方；调整供料时使用原生物流操作，并记录恢复连接所需信息。 |
 
 `waitForUnlock: false` 成功表示已入队或已经解锁，读取 `unlocked`、`inQueue` 区分。`true` 在后台等待原生解锁，也不占用机甲指令通道；只有显式依赖该命令的操作等待研究完成。
 
@@ -352,7 +362,15 @@ fly 的 direction 是本行星局部方向，水平输入投影到当前位置�
 
 端点对象可用 `entityId` 或同任务前序 `commandId`，可加 `entityIndex`、`slot` 及 `position`。位置对象使用当前行星坐标，slot 从实际端口信息取得。原始姿态或端口读取方式见 [查询](game-state.md)。
 
+`placeBelt` 返回的 `entityIds` 不保证与 `points` 同序，已有端点也可能不在返回数组中。`entityIndex` 是结果数组索引，不能直接套用规划点的下标；需要选择拐角、末段或汇入段时，先查询返回实体的实际 `pos` 与连接再引用。
+
+`points` 可同时提供 `start`、`end` 实体端点，用显式点列表达中间路径。两个端点都是已有带段时，接口移除与端点重合的预览；必须保留实际新点，否则返回 `invalid_command`（没有新建点）。短连接先按原生最小间距选择合法中间点，不能把只有两个已有端点的请求当作单独连线命令。
+
 `placeSorter` 的建筑端点必须使用未占用的原生插槽（占用返回 `slot_occupied`）；省略 `slot` 时默认 0，不自动选槽。可选 `position` 必须与该插槽换算后的行星局部坐标或传送带段位置一致（误差不超过 0.01），不能覆盖端点坐标；不匹配或插槽越界返回 `invalid_command`。通常只传实体和插槽即可。
+
+缩短分拣器距离时，从已建实体的实际 `pos`、`rot` 和插槽姿态换算接料点，不能沿用建造请求中未经原生网格吸附的中心坐标。当前原生 `BuildTool_Inserter.CheckBuildConditions` 对端点间距小于 1 米先返回 `Failure`，后续还检查网格距离与朝向；最短可用距离仍须通过原生校验，不能将带段贴到插槽上。
+
+原生分拣器的 `pickOffset/insertOffset` 是相对于所接带段 `segIndex + segPivotOffset` 的偏移，零表示带段中心，不表示整条路径起点。带上有货但分拣器不取货时，同时核对所接带段附近的实际货物、过滤、朝向与插槽；首段或弯道可能需要改用附近平直段，不能仅凭偏移为零判断接口漏传参数。
 
 ```json
 {
@@ -365,9 +383,11 @@ fly 的 direction 是本行星局部方向，水平输入投影到当前位置�
 
 Agent 提供路径；`startPosition` / `endPosition` 使用原生线段吸附，`points` 使用显式点列。下发后检查实际 `entityIds` 及连接。
 
+显式点列引用建筑端点时同样检查该实体实际开放的输送端口；无端口或插槽越界返回 `invalid_command`，不能用原型端口或显式端点位置越过堆叠后的端口限制。
+
 使用 `points` 时，点列直接作为新带段预览，不自动插值或吸附；`start` / `end` 可同时指定已有实体连接。普通建筑的端口本身不是新带段：首点应在输出端口外侧、沿端口朝向留出一段平直连接，末点与输入端口同理，不要把建筑端口坐标重复放进点列。重复端口点可能触发 `TooBend`，接头处的坡度可能触发 `JointCannotLift`。按实际端口姿态及失败段位置复核角度、径向高度和点间距离；采用显式点列时由 Agent 计算这些几何量，仍经过原生校验。
 
-传送带原生建造校验失败时，结果包含 `condition`、零起始 `previewIndex` 和失败段实际 `position`；没有具体失败预览时后两者为 null。索引对应实际预览列表，已有端点可能被移除，不保证等于请求点列索引。根据失败位置检查连接和碰撞，不整条路径盲目重试。
+传送带原生建造校验失败时，结果包含 `condition`、零起始 `previewIndex` 和失败段实际 `position`；没有具体失败预览时后两者为 null。索引对应实际预览列表，已有端点可能被移除，不保证等于请求点列索引。根据失败位置检查连接和碰撞，不整条路径盲目重试。连接已有对象且需要升降时，坡道两端各保留至少两个同高度的新预览带段；已有实体端点可能从预览列表移除，不能把它算作所需的水平新带段。坡道与拐角之间也应保留水平直线段；`JointCannotLift` 表示端点升降，`TooBendToLift` 表示转弯处同时升降，应先分开端点、坡道和转弯，再按原生校验复核。
 
 分拣器 `input` 是取物来源，`output` 是放物去向，例如来源传送带、去向熔炉。引用带段时用 `entityIndex` 选择连接段。
 
@@ -377,7 +397,17 @@ Agent 提供路径；`startPosition` / `endPosition` 使用原生线段吸附，
 
 建造命令以预建转为实际实体后成功。拆除结果含回收物品与位置，操作后检查背包和相邻连接。取消语义见 [取消与错误](#取消与错误)。
 
-建造成功、失败、超时或取消后，退出该命令进入的建造模式；尚未建成的预建不自动删除。取消 Mod 任务、移除原生制造/科研、取消预建是不同操作：`POST /tasks/{id}/cancel` 不撤销已入队的制造/科研或已创建的预建。等待中的科研被移除后返回 `research_interrupted`。预建已转为实体时不会按旧预建 ID 拆除实体，需重新观察。
+建造成功、失败、超时或取消后，退出该命令进入的建造模式；尚未建成的预建不自动删除。同组命令失败导致建造命令标为 `CANCELLED` 时，预建或实体也可能已经生成或落成；重试前核对实体和预建池，不能只凭任务状态重复施工。取消 Mod 任务、移除原生制造/科研、取消预建是不同操作：`POST /tasks/{id}/cancel` 不撤销已入队的制造/科研或已创建的预建。等待中的科研被移除后返回 `research_interrupted`。预建已转为实体时不会按旧预建 ID 拆除实体，需重新观察。
+
+普通 `placeBuilding` 的原生建造校验失败返回 `condition`、`itemId`、`modelIndex`、实际预览 `position` 和四元数 `rotation`。这些字段用于核对吸附、模型与碰撞体，不提供推荐位置；附加建筑走独立校验流程。
+
+### 传送带高度与转弯诊断
+
+传送带架高是路径高度与坡道问题，与建筑 `multiLevel` 垂直堆叠不同。交叉、避让和多路输送时，比较局部抬升跨越与平面绕行，合理使用不同高度减少地面占用；计入坡道长度、转弯空间和可用净空，避免把长绕路简单搬到空中。通过路径点的球面径向高度表达架高，遵守原生高度、坡度和空间碰撞限制；不能用全局 `y` 判断同一水平面。分拣器取放段应与所接建筑层的实际插槽同高，并留出平直段；相邻坡道可能使等径向高度的带段姿态仍倾斜，须核对实际 `objectPose.rotation` 与 `tilt`，不能只用端点高度判断水平。连接底层时下降到其插槽高度，连接上层时按上层实际姿态计算，不能用斜跨高度的分拣器补救架高带。接口还会校验原生端点朝向容差，少量球面／模型偏差不等于允许跨架高层。规划坡道时核对当前科技是否已解除线路坡度限制；线路首尾仍保留水平接头，原生 `JointCannotLift` 时先检查端点相邻带段，不能用坡度科技绕过接头规则。架高与下降使用逐点缓坡，坡道与转弯之间保留平直段；原生 `TooSteep` 时核对相邻点的径向高度差和水平间距，`TooBendToLift` 时分开升降与转弯，不能只延长整条线路却保留同一处急坡或坡底转弯。
+
+原生传送带避碰校验可能将部分预览沿径向调整约 0.667 米；因此请求点列同高，实际校验中的相邻段仍可能产生坡度。若平直拐角报 `TooBendToLift`，检查附近已有传送带的实际高度与净空，避免让拐角或相邻段触发避碰抬升／下降；调整跨越高度或横向位置后再验证，不只重复增加同高点。
+
+当前原生校验在带段两侧夹角小于 2.5 弧度（约 143°）且任一侧球面坡度绝对值超过 0.1 时拒绝坡底转弯。直角两侧应保持实际平直，升降从转角之外开始；附近带段避碰导致的高度变化同样计入，不能只按请求点列检查。
 
 ## 地形改造、还原与植被移植
 
@@ -417,6 +447,8 @@ Agent 提供路径；`startPosition` / `endPosition` 使用原生线段吸附，
 
 以下设置和转移走 instruction 通道，不等待手搓或科研；建筑目标仍须在当前星球和建造范围内。物流背包开关只控制自动配送，关闭后仍可手动转移。
 
+配置物流格前查询 `player.deliveryPackage { activeCount _pos2index(limit:100) _index2pos(limit:100) }`：`index` 是 `grids` 的原始索引，不是界面可见格序号。使用 `_pos2index` 中非负的值，或核对 `_index2pos[index] >= 0`；不能假定解锁后第 0 格可用。Mod 按原生 `IsGridActive(index)` 校验。
+
 | 命令 | 参数与语义 |
 | --- | --- |
 | `setDeliveryEnabled` | 必填布尔值 enabled；要求物流背包已解锁 |
@@ -433,3 +465,5 @@ Agent 提供路径；`startPosition` / `endPosition` 使用原生线段吸附，
 配送器使用 `placeBuilding {itemId:2107,stackOnEntityId:<顶层箱子>}`；不传猜测高度。普通箱子端口 15 和配送器端口 13 需符合原生连接规则。已有配送器的箱子再叠箱，原生会抬升配送器并重新连接新顶层；随后查询 dispenser.storageId 确认。物品供需匹配、供货箱选择、范围限制及机器人调度均由游戏处理；设置成功不等于已完成运输，需检查电力、pairCount、工作机器人及实际库存变化。
 
 从运输站输出的 `placeBelt` 必须在同一命令提供 `filterItemId`，选择已配置货槽中的物品；0 表示不选择输出物品。星际站已解锁运输船曲速时也可选 1210。该字段在创建预建前写入原生输出端口，带段建成前过滤已经生效；其他类型的连接不接受此字段。输入运输站的传送带由原生货槽需求接收，不支持独立物品过滤。通过 start / end 的实体与端口指定输入输出方向。
+
+查询运输站原生 `slots.storageIdx` 时，0 表示没有货槽映射，普通货槽的映射值对应 `storage[storageIdx - 1]`；星际站的特殊值 6 表示翘曲器专用缓冲，不对应普通五槽数组中的 `storage[5]`。先区分专用缓冲与普通货槽，再核对数组范围；该字段与 `setStationStorage.storageIndex` 的零起始编号不同。核对输出物品时同时读取 `slots`、`storage` 和实际连接，不直接用 `storageIdx` 作为数组索引。

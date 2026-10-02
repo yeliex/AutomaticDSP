@@ -9,29 +9,21 @@ Mod 提供游戏原生观测和操作，Agent 负责选址、产能计算、布�
 
 ## 理解目标并决定下一步
 
-根据当前科技、产量、库存、电力、物流和资源选择下一步。目标所需科技未完成时，优先缩短相关科技的解锁时间；具备所需能力后，围绕实际瓶颈推进目标规模。具体取舍见 [规划提示](references/guides/goal-planning.md)，矩阵俗称见 [名词映射](references/guides/goal-planning.md#矩阵名词映射)。
+根据当前科技、产量、库存、电力和物流定位目标瓶颈。优先安排有收益的效率升级，解锁后尽快应用；保持科研与材料供应衔接，制造和科研等待期间推进独立操作。长任务定期及在科技、资源或运行状态变化时执行 [效率复核](references/guides/goal-planning.md#定期效率复核)，扩产前比较 [配方候选](references/guides/goal-planning.md#配方候选复核)。
 
-用游戏状态验证操作效果，依据新证据调整计划。长任务保留目标、关键决定和恢复所需信息，恢复时重新核对存档与现场。
+缺电时先比较当前可用的 [能源与燃料方案](references/guides/production.md#能源选择)，不默认扩风电。取料和备货优先复用现有产线与仓储，减少递归手搓，并保留持续生产所需材料。复杂产线或大规模扩产主动评估 [跨星球供应](references/guides/interplanetary.md#跨星球产线规划)，降低本地加工与布局成本。
 
-长任务定期执行[效率复核](references/guides/goal-planning.md#定期效率复核)：一起检查升级科技、替代配方、现有产线升级和更高级的新产线。科技解锁、阶段完成或产量／电力出现瓶颈时提前复核，按目标端收益与投入选择，不默认继续复制低级设备。
+改造前定位真实限制，完成后按相同范围和游戏时间窗口核对目标端收益；具体使用 [统计诊断流程](references/guides/production.md#基于统计优化产线)，不以理论产能或建造成功代替持续产出。
 
-扩建供电前，比较当前可行电源的持续净供电、占地和配套成本，优先采用当前条件下效率最高的方案，不默认扩风电。具体比较方法和切换条件见[能源选择](references/guides/production.md#能源选择)。
+长任务记录目标、关键决定、已完成操作与任务 ID。恢复上下文后核对存档、任务结果和现场，再继续未完成项；结果不确定时先查询，避免重复下达。
 
-制造和科研先入队，等待期间继续移动、采集或建设；手搓批量与资源取舍见 [机甲指南](references/guides/mecha.md)。
+## 执行与收尾
 
-新建或扩产、持续缺料、副产物积压，以及相关科技或资源来源变化时，先执行[配方候选复核](references/guides/goal-planning.md#配方候选复核)，再决定复制设备、扩大采集或增加仓储。按物品 ID 查全产出与消耗配方，并比较组合后的净供需，不只沿用当前配方或凭名称回忆。
+科研、手搓、机甲指令、建造按独立通道推进。预建下达后可继续移动，建造任务仍等实体落成才成功；跨通道依赖用 `dependsOn` 或状态条件，实体引用自动等待落成，数组顺序不保证跨通道完成顺序。
 
-补充原矿与中间产物时，优先从现有矿机、生产建筑和储物仓取料，减少手挖；取用前为持续生产和科研保留材料。
+继续下一组操作前，理解并用 `dismissNotice` 确认普通通知，核对 `acknowledged:true`、`visible:false`；自行收起不等于确认。错误、存档和其他决策对话框需单独处理，详见 [提示查询](references/interface/game-state.md#提示与地形查询)。
 
-扩产或优化前，用 [statistics 查询](references/interface/statistics.md)比较目标链的实际产消、参考产能、库存变化与供电，再按[统计诊断流程](references/guides/production.md#基于统计优化产线)定位瓶颈。优先改善目标端的持续交付或科研速度；改造后保持同一范围和窗口复测，不以设备数量增加或理论产能提高代替效率提升。
-
-跨星球任务先查询 `player.flight` 与行星 `resources`，准备燃料和返程储备，再用 `navigateTo` 指定目的地；选星与航行准备见 [外星资源与扩张](references/guides/interplanetary.md)。
-
-调度自动分为科研、手搓、机甲指令、建造通道；垃圾等即时操作无需排队。预建下达后可继续移动，建造命令仍等实际落成才成功。跨通道依赖使用 `dependsOn` 或状态条件，实体引用自动等待落成；不能把命令在数组中的前后位置当作制造或科研完成保证。
-
-每次状态响应都包含 `notifications.notices` 和当前游戏目标。读懂科研完成、教程等非决策提示后，在继续下一组操作前用 `dismissNotice` 确认并关闭，再核对 `acknowledged:true`、`visible:false`；读取或游戏自行收起不等于已处理。科研完成同时触发相关配方与计划复核。错误、存档确认及其他需要选择的对话框不能按普通通知盲目关闭。
-
-丢弃、拆除或库存溢出后检查响应中的 `trash`，按[背包与垃圾收尾](references/guides/mecha.md#能源与背包)回收或清理，并查询确认结果；不要把丢弃成功当成垃圾已清除。
+丢弃、拆除或满包溢出后，执行 [背包与垃圾收尾](references/guides/mecha.md#能源与背包)，确认物品去向及剩余垃圾。
 
 ## 按需读取参考
 
@@ -41,7 +33,7 @@ Mod 提供游戏原生观测和操作，Agent 负责选址、产能计算、布�
 
 接口按需读取：创建、加载、保存对局见 [游戏管理](references/interface/game.md)；世界状态和原型查询见 [游戏状态](references/interface/game-state.md)；任务提交、查询、取消、历史及操作参数见 [游戏控制](references/interface/game-control.md)。
 
-查询燃料热值、设备功率、完整物品与配方目录，或规划输送端口与垂直堆叠时，读取 [原型属性与连接契约](references/interface/prototypes-and-connections.md)，按实际原型和实体数据选择参数；堆叠能力以 `prefabDesc.multiLevel` 等属性判断，不按建筑名称推断。
+查询原型、燃料、完整配方目录，或规划端口与垂直堆叠时，读取 [原型属性与连接契约](references/interface/prototypes-and-connections.md)。
 
 | 当前需要 | 玩法指南 |
 | --- | --- |
@@ -50,6 +42,7 @@ Mod 提供游戏原生观测和操作，Agent 负责选址、产能计算、布�
 | 机甲能源、移动、人工采集与手搓 | [机甲](references/guides/mecha.md) |
 | 首批钛硅、资源探测、跨星球运输与后期选址 | [外星资源与扩张](references/guides/interplanetary.md) |
 | 产线整体布局、紧凑共线、立体输送与分层供料、仓储、供电及运行诊断 | [产线建设与运行](references/guides/production.md) |
+| 大规模选址、球面空间、分批投产、一物一塔、邻塔布线与重氢分馏循环（可选参考） | [大规模产线布局](references/guides/large-scale-layout.md) |
 | 产能配比、机器取整、增产剂与计算脚本 | [产线需求计算](references/guides/production-calculation.md) |
 | 戴森球、光子与蓝图建设 | [戴森球](references/guides/dyson-sphere.md) |
 
