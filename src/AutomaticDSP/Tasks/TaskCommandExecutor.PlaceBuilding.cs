@@ -215,7 +215,20 @@ namespace AutomaticDSP.Tasks
                         BuildConditionCode(preview.condition),
                         preview.conditionText,
                         now,
-                        new JsonObject { ["condition"] = preview.condition.ToString() });
+                        new JsonObject
+                        {
+                            ["condition"] = preview.condition.ToString(),
+                            ["itemId"] = item.ID,
+                            ["modelIndex"] = desc.modelIndex,
+                            ["position"] = Vector(preview.lpos),
+                            ["rotation"] = new JsonObject
+                            {
+                                ["x"] = preview.lrot.x,
+                                ["y"] = preview.lrot.y,
+                                ["z"] = preview.lrot.z,
+                                ["w"] = preview.lrot.w
+                            }
+                        });
                     return;
                 }
 
