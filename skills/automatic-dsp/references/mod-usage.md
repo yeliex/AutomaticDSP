@@ -16,6 +16,12 @@ dotnet build ./src/AutomaticDSP/AutomaticDSP.csproj -p:DSPGameDir="D:\SteamLibra
 
 退出游戏后，将 `src/AutomaticDSP/bin/Debug/net472` 中的 Mod DLL、运行依赖和原生依赖子目录部署到游戏目录下的 `BepInEx/plugins/AutomaticDSP`，保留依赖目录结构。通过正常游戏平台启动游戏，检查 BepInEx 日志中的 Mod 加载和 HTTP 服务启动结果。
 
+## 内存异常增长与桌面会话
+
+如果游戏内存持续异常增长，尤其在标题界面也出现增长，可以排查启动时桌面会话未激活的可能性。在 RDP 环境中，可用 `query session` 检查游戏所在用户会话是否为 `Disc`，再尝试连接该桌面后，通过 Steam 重启游戏，比较内存趋势、画面与游戏 tick 是否恢复正常。单次 HTTP 响应或 `ready:true` 不足以确认游戏正常运行。
+
+本机曾观察到断开 RDP 时启动游戏持续增长内存，连接桌面后启动则稳定，随后断开仍能正常运行。因此连接桌面可作为此类异常的排查和规避手段，无需将其设为每次启动的固定前置条件；是否可以断开，以实际运行状态和内存趋势为准。桌面会话状态只是可能原因，具体泄漏机制尚未定位，不能据此认定显卡未激活。
+
 ## 配置
 
 首次加载后，配置文件通常位于游戏目录的 `BepInEx/config/dev.yeliex.automaticdsp.cfg`。修改配置后重启游戏使其生效。

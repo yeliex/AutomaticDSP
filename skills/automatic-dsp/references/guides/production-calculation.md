@@ -6,6 +6,8 @@
 
 先从目标反推整条供应链，再决定建设规模。科研目标先计算剩余科技所需的各类矩阵，扣除可达库存和在途物料，根据候选完成时间推导各类矩阵的交付速率；产速目标直接以目标端交付速率展开。逐级汇总共用中间品、燃料与建设物资需求，抵扣现有稳定供给，核对运输、电力和副产物出口后，形成需要补齐的整组产能。不要以单台机器的满载产量作为整条链的目标，或看到某种缺料就独立建设该物品产线。比较整组建设的投产成本与目标完成时间，再分批施工、验证目标端收益。
 
+物流塔供应点的当前目标需求用于核对基础供给，不作为建设产能上限；按未来规模成批建设，再用所选规模计算原料、电力、带线和运力是否足够。具体建设与缓冲原则见 [物料供应与仓储](production.md#物料供应与仓储)。
+
 使用当前存档对应的物品 ID、配方投入与产出、每轮秒数、设备相对配方的速度倍率及工作功率。物品速率统一为件/游戏秒，功率为 MW；件/分钟先除以 60。原型字段的单位换算与接口缺口见 [计算数据接入](../interface/game-state.md#产线计算数据接入)。记录数据版本、来源和人工假设，方便更换配方或设备后重算。
 
 可将查询响应保存为 JSON，使用 `node scripts/prototype-to-recipe.mjs 快照.json 配方ID 设备物品ID 目标物品ID 每秒目标量` 输出 `production-calc.mjs recipe` 的输入。快照需包含配方的 `id type unlocked timeSeconds items results`，以及设备物品的 `id unlocked prefabDesc`；描述中选择 `isAssembler assemblerRecipeType assemblerSpeedMultiplier isLab labSpeedMultiplier workPowerW`。脚本保留所有投入与产物，拒绝特殊加工，不自动附加增产。
