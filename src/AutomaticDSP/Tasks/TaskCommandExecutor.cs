@@ -95,6 +95,9 @@ namespace AutomaticDSP.Tasks
                 case "autoreplenishmechafuel":
                     ExecuteAutoReplenishMechaFuelLocked(command, now);
                     return;
+                case "autoreplenishmechawarper":
+                    ExecuteAutoReplenishMechaWarper(command, now);
+                    return;
                 case "entityfastfillin":
                     ExecuteEntityFastFillInLocked(task, command, now);
                     return;

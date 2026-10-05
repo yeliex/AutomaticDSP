@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using UnityEngine;
 
 namespace AutomaticDSP.Tasks
@@ -16,7 +17,7 @@ namespace AutomaticDSP.Tasks
         internal readonly bool UseWarp;
         internal bool WarpUsed;
         internal string WarpStatus;
-        private bool warpAttempted;
+        private long nextWarpTick;
         private Vector3 departureDirection;
         internal double? ArrivalDistance;
         internal int GuidanceUpdates;
@@ -31,11 +32,20 @@ namespace AutomaticDSP.Tasks
         private VectorLF3 observedVelocity;
         private double guidanceClearance;
         private double wantedSpeed;
+        internal Vector3 LandingPosition;
+        private Vector3 localWaypoint;
+        private long nextLocalRouteTick;
+        private bool landing;
+        internal int LocalRouteChecks;
+        internal int LocalRouteSearches;
+        internal double MaxLocalRouteMilliseconds;
 
         internal FlightNavigation(PlanetData target, Vector3 position, VectorLF3? universalPosition, double tolerance, bool useWarp)
         {
             Target = target;
             Position = position;
+            LandingPosition = target == null ? position : position.normalized * target.realRadius;
+            localWaypoint = LandingPosition;
             UniversalPosition = universalPosition;
             Tolerance = tolerance;
             UseWarp = useWarp;
@@ -49,9 +59,46 @@ namespace AutomaticDSP.Tasks
             var local = GameMain.localPlanet;
             var onTarget = Target != null && player.planetId == Target.id;
             var gas = Target != null && Target.type == EPlanetType.Gas;
-            var targetWorld = UniversalPosition ?? (Target.uPosition + Maths.QRotateLF(Target.runtimeRotation, Position));
+            if (onTarget && !gas && !landing && local?.physics != null && tick >= nextLocalRouteTick)
+            {
+                var routeStarted = Stopwatch.GetTimestamp();
+                LocalRouteChecks++;
+                var colliders = LocalNavigation.ReadColliders(local, player.position, LandingPosition);
+                var previousLanding = LandingPosition;
+                // 已选停靠点仍安全时保持它，避免搜索方向随机甲移动而旋转。
+                if (!LocalNavigation.CanLand(colliders, LandingPosition, Target.realRadius) &&
+                    !LocalNavigation.TryLandingPoint(colliders, Position, player.position, Target.realRadius,
+                        out LandingPosition))
+                { input.Error = "landing_area_blocked"; return; }
+                var surfacePoint = player.position.normalized * Target.realRadius;
+                var remaining = Vector3.Distance(surfacePoint, LandingPosition);
+                if (player.movementState == EMovementState.Fly && remaining <= Tolerance &&
+                    Vector3.ProjectOnPlane(controller.velocity, surfacePoint.normalized).magnitude <= Math.Min(2, Tolerance * 0.5) &&
+                    LocalNavigation.CanLand(colliders, surfacePoint, Target.realRadius))
+                {
+                    // 接受容差内的安全落地柱；下降期间不再追逐中心或切换路线。
+                    LandingPosition = surfacePoint;
+                    localWaypoint = surfacePoint;
+                    landing = true;
+                }
+                else if (remaining > Tolerance &&
+                    (player.movementState == EMovementState.Fly || player.movementState == EMovementState.Walk) &&
+                    ((previousLanding - LandingPosition).sqrMagnitude > 0.01f ||
+                        Vector3.Distance(player.position.normalized * Target.realRadius, localWaypoint) <= 3 ||
+                        !LocalNavigation.CanReachWaypoint(colliders, player.position, localWaypoint, Target.realRadius)))
+                {
+                    LocalRouteSearches++;
+                    if (!LocalNavigation.TryWaypoint(colliders, player.position, LandingPosition, Target.realRadius, out localWaypoint))
+                    { input.Error = "local_route_blocked"; return; }
+                }
+                MaxLocalRouteMilliseconds = Math.Max(MaxLocalRouteMilliseconds,
+                    (Stopwatch.GetTimestamp() - routeStarted) * 1000.0 / Stopwatch.Frequency);
+                nextLocalRouteTick = tick + 30;
+                nextGuidanceTick = 0;
+            }
+            var targetWorld = UniversalPosition ?? (Target.uPosition + Maths.QRotateLF(Target.runtimeRotation, LandingPosition));
             Distance = onTarget ? Vector3.Distance(player.position.normalized * Target.realRadius,
-                Position.normalized * Target.realRadius) : (targetWorld - player.uPosition).magnitude;
+                LandingPosition.normalized * Target.realRadius) : (targetWorld - player.uPosition).magnitude;
             var inSpace = local == null && player.movementState == EMovementState.Sail;
             observedVelocity = previousPosition.HasValue ? (player.uPosition - previousPosition.Value) * (60.0 / Math.Max(1, tick - previousTick)) : player.uVelocity;
             if (Target == null && inSpace && !ArrivalDistance.HasValue)
@@ -75,7 +122,8 @@ namespace AutomaticDSP.Tasks
                 : Distance <= Tolerance && onTarget && (gas
                     ? player.movementState == EMovementState.Fly && controller.velocity.magnitude <= 5 &&
                         player.position.magnitude - Target.realRadius <= 30
-                    : player.movementState == EMovementState.Walk && controller.actionWalk.isGrounded));
+                    : IsSurfaceArrival(player.movementState, controller.actionWalk.isGrounded,
+                        player.position.magnitude - Target.realRadius, controller.velocity.magnitude)));
             input.WarpToggle = false;
             if (Arrived)
             {
@@ -101,8 +149,7 @@ namespace AutomaticDSP.Tasks
 
             var warping = player.warpCommand || player.warping;
             if (tick >= nextGuidanceTick || GuidanceUpdates == 0 || plannedMovement != player.movementState ||
-                plannedPlanet != local || plannedWarp != warping ||
-                (onTarget && Distance <= Tolerance && input.Mode != "land" && Phase != "hovering"))
+                plannedPlanet != local || plannedWarp != warping)
             {
                 guidanceClearance = Math.Max(0, (targetWorld - player.uPosition).magnitude - Tolerance);
                 Plan(input, targetWorld, local, onTarget, gas);
@@ -115,13 +162,27 @@ namespace AutomaticDSP.Tasks
                 GuidanceIntervalTicks = (int)Math.Max(1, Math.Min(60, Math.Floor(guidanceClearance / Math.Max(1, speedBound) * 12)));
                 if (VectorLF3.Dot(observedVelocity.normalized, input.Direction) < 0.98)
                     GuidanceIntervalTicks = Math.Min(GuidanceIntervalTicks, 6);
+                // 近地控制不使用星际航速估算周期；帧间复用输入，避免误算成每 tick 都重新制导。
+                if (onTarget && player.movementState != EMovementState.Sail) GuidanceIntervalTicks = 6;
                 nextGuidanceTick = tick + GuidanceIntervalTicks;
             }
             if (player.movementState == EMovementState.Sail && input.Error == null)
             {
                 UpdateSailInput(input, local);
-                if (UseWarp) UpdateWarp(input, input.Direction, local);
+                if (UseWarp) UpdateWarp(input, input.Direction, local, tick);
             }
+        }
+
+        internal void YieldToPlayer()
+        {
+            Phase = "manualOverride";
+            nextGuidanceTick = 0;
+            nextLocalRouteTick = 0;
+            previousPosition = null;
+            previousInSpace = false;
+            departureDirection = Vector3.zero;
+            landing = false;
+            localWaypoint = LandingPosition;
         }
 
         private void Plan(FlightInput input, VectorLF3 targetWorld, PlanetData local, bool onTarget, bool gas)
@@ -138,8 +199,17 @@ namespace AutomaticDSP.Tasks
             if (!fuelPresent && player.mecha.reactorEnergy < 10000)
                 player.mecha.AutoReplenishFuelAll();
 
-            if (player.movementState == EMovementState.Walk)
+            // 原生漂浮也通过跳跃输入起飞，落地途中经过水面不能中断导航。
+            if (player.movementState == EMovementState.Walk || player.movementState == EMovementState.Drift)
             {
+                // 原生在离地约 3 米时已切换 Walk；下降尚未接地不能触发再次起飞。
+                if (landing && onTarget && Distance <= Tolerance)
+                {
+                    input.Mode = "idle";
+                    Phase = "landing";
+                    return;
+                }
+                if (landing) { landing = false; nextLocalRouteTick = 0; }
                 input.Mode = "takeOff";
                 Phase = "takingOff";
                 return;
@@ -147,7 +217,8 @@ namespace AutomaticDSP.Tasks
             if (player.movementState == EMovementState.Fly)
             {
                 guidanceClearance = Math.Min(guidanceClearance, Math.Abs(player.position.magnitude - local.realRadius - 50));
-                if (onTarget && Distance <= Tolerance)
+                var horizontalSpeed = Vector3.ProjectOnPlane(player.controller.velocity, player.position.normalized).magnitude;
+                if (onTarget && (landing || gas && Distance <= Tolerance && horizontalSpeed <= Math.Min(2, Tolerance * 0.5)))
                 {
                     input.Mode = gas ? "fly" : "land";
                     input.Lift = gas && player.position.magnitude - Target.realRadius > 25 ? -1 : 0;
@@ -155,15 +226,14 @@ namespace AutomaticDSP.Tasks
                     return;
                 }
                 input.Mode = "fly";
-                input.Direction = onTarget ? Position - player.position :
+                input.Direction = onTarget ? (Distance <= Tolerance ? LandingPosition : localWaypoint) - player.position :
                     (Vector3)Maths.QInvRotateLF(local.runtimeRotation, targetWorld - player.uPosition);
                 if (onTarget)
                 {
-                    // 原生 Fly 平滑转向会保留横向速度；位置反馈加入阻尼，避免高移速机甲绕着落点盘旋。
+                    // 原生 Fly 已以约 0.75 秒的响应平滑速度；反馈的方向和幅度须来自同一个速度目标。
                     var offset = Vector3.ProjectOnPlane(input.Direction, player.position.normalized);
-                    input.Direction = offset - Vector3.ProjectOnPlane(player.controller.velocity, player.position.normalized);
-                    input.Thrust = input.Direction.sqrMagnitude < 0.001f ? 0 :
-                        Mathf.Clamp01(offset.magnitude / (player.mecha.walkSpeed * 2.5f));
+                    SetLocalFlightInput(input, offset,
+                        Vector3.ProjectOnPlane(player.controller.velocity, player.position.normalized), player.mecha.walkSpeed * 2.5f);
                 }
                 var tangent = Vector3.ProjectOnPlane(input.Direction, player.position.normalized);
                 if (tangent.sqrMagnitude < 0.001f)
@@ -202,7 +272,7 @@ namespace AutomaticDSP.Tasks
             {
                 var radial = player.uPosition - Target.uPosition;
                 var up = radial.normalized;
-                var point = Maths.QRotateLF(Target.runtimeRotation, Position.normalized);
+                var point = Maths.QRotateLF(Target.runtimeRotation, LandingPosition.normalized);
                 var tangent = point - up * VectorLF3.Dot(point, up);
                 var arc = Math.Acos(Math.Max(-1, Math.Min(1, VectorLF3.Dot(up, point)))) * Target.realRadius;
                 var altitude = radial.magnitude - Target.realRadius;
@@ -249,11 +319,13 @@ namespace AutomaticDSP.Tasks
                     }
                 }
             }
-            if (Target != null && !gas && (local == null || local == Target) && !player.warping && !player.warpCommand)
+            if (Target != null && !gas && (local == null || local == Target) &&
+                (local == Target || (Target.uPosition - player.uPosition).magnitude <= Target.realRadius + 1200) &&
+                !player.warping && !player.warpCommand)
             {
                 var landingDelta = targetWorld - player.uPosition;
                 var landingNormal = (targetWorld - Target.uPosition).normalized;
-                var surfaceVelocity = Target.GetUniversalVelocityAtLocalPoint(GameMain.gameTime, Position);
+                var surfaceVelocity = Target.GetUniversalVelocityAtLocalPoint(GameMain.gameTime, LandingPosition);
                 var approachVelocity = player.uVelocity - surfaceVelocity;
                 // 固态星对准近侧落点时保留航速，交给原生地表碰撞落地；偏航或背面落点仍走修正流程。
                 if (VectorLF3.Dot(landingDelta.normalized, -landingNormal) > 0.5 &&
@@ -268,6 +340,18 @@ namespace AutomaticDSP.Tasks
             }
             input.Direction = ((Vector3)direction).normalized;
         }
+
+        internal static void SetLocalFlightInput(FlightInput input, Vector3 offset, Vector3 velocity, float speedLimit)
+        {
+            var desiredVelocity = Vector3.ClampMagnitude(offset * 0.8f - velocity * 0.6f, speedLimit);
+            input.Direction = desiredVelocity;
+            input.Thrust = desiredVelocity.magnitude / Math.Max(1, speedLimit);
+        }
+
+        internal static bool IsSurfaceArrival(EMovementState state, bool grounded, float altitude, float speed) =>
+            state == EMovementState.Walk && grounded ||
+            // 原生水面移动使用 Drift，稳定漂浮即可到达，不要求接触海床。
+            state == EMovementState.Drift && altitude <= 3 && speed <= 2;
 
         private void UpdateSailInput(FlightInput input, PlanetData local)
         {
@@ -287,24 +371,25 @@ namespace AutomaticDSP.Tasks
                 speedLimit = Math.Min(speedLimit, Math.Max(120, player.mecha.maxSailSpeed * 0.3));
             // S 键制动按当前速度衰减，提前限速；不直接写入速度或抵消惯性。
             input.Thrust = speed > speedLimit * 1.08 ? -1 : 1;
-            // 制动之外还需绕行、悬停和落点调整，不能把核心剩余能量全部用于巡航加速。
+            // 按原生制动耗能留余量；不固定扣留核心容量，远程巡航优先加速到航速上限。
             var brakingReserve = player.mecha.thrustPowerPerAcc * player.mecha.reactorPowerConsRatio * 3 * (1.5 * speed + 50);
-            brakingReserve += player.mecha.coreEnergyCap * 0.3;
+            brakingReserve += 10000;
             input.Boost = input.Thrust > 0 && speed < speedLimit - 1 && alignment > 0.95 &&
                 player.mecha.coreEnergy > brakingReserve;
         }
 
-        private void UpdateWarp(FlightInput input, VectorLF3 direction, PlanetData local)
+        private void UpdateWarp(FlightInput input, VectorLF3 direction, PlanetData local, long tick = 0)
         {
             var player = input.Player;
             var mecha = player.mecha;
             var distance = Target == null ? Distance : (Target.uPosition - player.uPosition).magnitude - Target.realRadius;
             var alignment = VectorLF3.Dot(player.uRotation.Forward(), direction.normalized);
-            var reserve = mecha.coreEnergyCap * 0.3 + mecha.warpKeepingPowerPerSpeed * mecha.maxWarpSpeed * 0.3 * mecha.reactorPowerConsRatio;
+            // 只预留原生退出曲速尾程的耗能，不提前扣留 30% 核心能量。
+            var reserve = 10000 + mecha.warpKeepingPowerPerSpeed * mecha.maxWarpSpeed * 0.3 * mecha.reactorPowerConsRatio;
             if (player.warpCommand || player.warping)
             {
                 WarpUsed = true;
-                warpAttempted = true;
+                nextWarpTick = tick + 60;
                 // 不调用会遍历天体的 currentWarpSpeed；用无天体衰减的指数尾程作保守上界。
                 // 原生每 tick 退出 0.06667667，额外覆盖一次输入延迟及离散积分误差。
                 var state = Math.Min(1, player.warpState + 0.0055655558);
@@ -313,7 +398,8 @@ namespace AutomaticDSP.Tasks
                 var exitSeconds = state / (0.06667667 * 60) + 1.0 / 60;
                 var tail = mecha.maxWarpSpeed / 1000.0 * ((Math.Exp(exponent * state) - 1) / exponent - state) /
                     (0.06667667 * 60) + peak * (2.0 / 60);
-                var exitDistance = Math.Max(6000, tail + player.uVelocity.magnitude * exitSeconds + mecha.maxSailSpeed * 3);
+                var exitDistance = Math.Max(Target == null ? Tolerance : 1200,
+                    tail + player.uVelocity.magnitude * exitSeconds + mecha.maxSailSpeed * 0.1);
                 var delta = (Target == null ? UniversalPosition.Value : Target.uPosition) - player.uPosition;
                 var velocity = observedVelocity - (Target == null ? VectorLF3.zero : (Target.uPositionNext - Target.uPosition) * 60);
                 // 与沿实际运动方向到最近点的路程比较；直接用退出时长乘当前曲速会过早退出。
@@ -331,21 +417,26 @@ namespace AutomaticDSP.Tasks
                 Phase = WarpStatus == "exiting" ? "exitingWarp" : "warping";
                 return;
             }
-            if (warpAttempted) { WarpStatus = WarpUsed ? "completed" : "native_rejected"; return; }
+            if (tick < nextWarpTick) { WarpStatus = WarpUsed ? "recharging" : "native_rejected"; return; }
             if (local != null) { WarpStatus = "not_in_space"; return; }
-            if (distance <= Math.Max(12000, mecha.maxWarpSpeed * 0.1 + mecha.maxSailSpeed * 6))
+            // 原生曲速启动没有目标距离门槛；距离只用于判断是否已经到达与何时退出。
+            if (distance <= Tolerance)
             { WarpStatus = "distance_too_short"; return; }
+            // 已退出曲速后，近程交给普通航行；远程须充分充能，避免每次刚够启动就耗一枚翘曲器。
+            if (WarpUsed && distance <= mecha.maxSailSpeed * 3.5 + (Target == null ? Tolerance : 1200))
+            { WarpStatus = "approaching"; return; }
+            if (WarpUsed && mecha.coreEnergy < mecha.coreEnergyCap * 0.9)
+            { WarpStatus = "recharging"; return; }
             if (mecha.thrusterLevel < 3) { WarpStatus = "tech_locked"; return; }
-            if (mecha.coreEnergy <= mecha.warpStartPowerPerSpeed * mecha.maxWarpSpeed + reserve)
+            if (mecha.coreEnergy <= mecha.warpStartPowerPerSpeed * mecha.maxWarpSpeed)
             { WarpStatus = "insufficient_energy"; return; }
             if (!mecha.HasWarper() && !(mecha.autoReplenishWarper && player.package.GetItemCount(1210) > 0))
             { WarpStatus = "missing_warper"; return; }
             if (alignment < 0.999 || VectorLF3.Dot(player.uVelocity.normalized, direction.normalized) < 0.98)
             { WarpStatus = "aligning"; return; }
-            // 单次导航最多启动一次，原生近天体退出或低能退出后不反复消耗翘曲器。
             input.WarpToggle = true;
             input.Boost = false;
-            warpAttempted = true;
+            nextWarpTick = tick + 60;
             WarpStatus = "starting";
             Phase = "startingWarp";
         }

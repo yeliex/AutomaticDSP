@@ -17,6 +17,9 @@ namespace AutomaticDSP.Tasks
         internal readonly int Duration;
         internal int AppliedTicks;
         internal string Error;
+        internal string OverrideReason;
+        internal long SnapshotTick = -60;
+        internal bool InputReleased => disposed;
         private readonly PlayerController controller;
         private readonly int planetId;
         private readonly DateTimeOffset deadline;
@@ -38,10 +41,24 @@ namespace AutomaticDSP.Tasks
             Duration = duration;
             this.deadline = deadline;
             Navigation = navigation;
+            EnsureAttached();
+        }
+
+        internal void EnsureAttached()
+        {
+            if (Error != null) return;
+            if (disposed) { Error = "controller_unavailable"; return; }
+            // 周期核对输入包装，恢复原生动作数组重建；不能抢占其他飞行命令的输入。
             for (var i = 0; i < controller.actions.Length; i++)
             {
                 var action = controller.actions[i];
-                if (action == controller.actionWalk || action == controller.actionFly || action == controller.actionSail)
+                if (action is InputAction wrapper && wrapper.Owner != this)
+                {
+                    Error = "flight_input_conflict";
+                    return;
+                }
+                if (action == controller.actionWalk || action == controller.actionFly || action == controller.actionSail ||
+                    (Navigation != null && action == controller.actionDrift))
                     controller.actions[i] = new InputAction(this, action);
             }
         }
@@ -64,15 +81,26 @@ namespace AutomaticDSP.Tasks
             if (Error != null) return false;
             var uiOpen = VFInput.inFullscreenGUI || VFInput.inputing || VFInput.inScreenshotMode || UIGame.viewMode >= EViewMode.Globe;
             // 界面按键不代表移动接管；导航仍逐 tick 驱动原生动作，显式订单始终优先。
-            if ((Navigation == null && uiOpen) || controller.cmd.type == ECommand.Build ||
-                Player.navigation.navigating || (Player.currentOrder != null && !Player.currentOrder.targetReached) ||
-                (!uiOpen && (controller.input0.sqrMagnitude > 0 || controller.input1.sqrMagnitude > 0 ||
-                VFInput._warpKey || VFInput._sailSpeedUp || VFInput.rtsStop.onDown ||
-                (Navigation != null && VFInput._sailLockCursor))))
+            OverrideReason = Navigation == null && uiOpen ? "ui_open" :
+                controller.cmd.type == ECommand.Build ? "build_command" :
+                Player.navigation.navigating ? "native_navigation" :
+                Player.currentOrder != null && !Player.currentOrder.targetReached ? "player_order" :
+                uiOpen ? null : controller.input0.sqrMagnitude > 0 || controller.input1.sqrMagnitude > 0 ? "movement_input" :
+                VFInput._warpKey ? "warp_key" : VFInput._sailSpeedUp ? "speed_up_key" :
+                VFInput.rtsStop.onDown ? "stop_key" : Navigation != null && VFInput._sailLockCursor ? "cursor_lock_key" : null;
+            if (OverrideReason != null)
+            {
+                if (Navigation != null)
+                {
+                    // 保留目的地与原超时；人工输入结束后，下一帧从实际位置重新规划。
+                    Navigation.YieldToPlayer();
+                    return false;
+                }
                 Error = "manual_override";
+            }
             else if (Navigation == null && Mode != "sail" && Mode != "warp" && Mode != "exitWarp" && Player.planetId != planetId)
                 Error = "planet_changed";
-            else if (Player.mecha.coreEnergy <= 0 && Mode != "exitWarp") Error = "insufficient_energy";
+            else if (Navigation == null && Player.mecha.coreEnergy <= 0 && Mode != "exitWarp") Error = "insufficient_energy";
             if (Error != null) return false;
             if (lastTick != tick)
             {

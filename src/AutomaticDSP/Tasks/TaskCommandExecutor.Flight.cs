@@ -9,12 +9,42 @@ namespace AutomaticDSP.Tasks
 {
     internal sealed partial class TaskCommandExecutor
     {
+        private void ExecuteAutoReplenishMechaWarper(CommandState command, DateTimeOffset now)
+        {
+            // 机甲仓补充不依赖行星，太空航行也必须能使用原生背包物资。
+            var player = GameMain.mainPlayer;
+            if (player?.mecha == null)
+            {
+                finishCommand(command, CommandFailed, "game_not_ready", "机甲不可用。", now, null);
+                return;
+            }
+            if (player.mecha.thrusterLevel < 3)
+            {
+                finishCommand(command, CommandFailed, "tech_locked", "机甲曲速飞行尚未解锁。", now, null);
+                return;
+            }
+            var before = player.mecha.warpStorage.GetItemCount(1210);
+            // 使用原生补充方法保留仓容量、增产点及未装入物品的返还规则。
+            player.mecha.AutoReplenishWarper();
+            var after = player.mecha.warpStorage.GetItemCount(1210);
+            finishCommand(command, after > 0 ? CommandSucceeded : CommandFailed,
+                after > 0 ? null : "missing_warper", after > 0 ? null : "背包和机甲翘曲仓均无翘曲器。", now,
+                new JsonObject
+                {
+                    ["method"] = "Mecha.AutoReplenishWarper",
+                    ["movedCount"] = after - before,
+                    ["warperCount"] = after,
+                    ["packageCount"] = player.package.GetItemCount(1210)
+                });
+        }
+
         internal static object FlightResult(FlightInput flight)
         {
             var player = GameMain.mainPlayer;
             var state = GameStateQueryService.CaptureFlightState(player) ?? new JsonObject();
-            state["inputReleased"] = true;
+            state["inputReleased"] = flight?.InputReleased ?? true;
             state["appliedTicks"] = flight?.AppliedTicks ?? 0;
+            state["overrideReason"] = flight?.OverrideReason;
             if (flight?.Navigation != null)
             {
                 state["targetPlanetId"] = flight.Navigation.Target?.id;
@@ -24,8 +54,13 @@ namespace AutomaticDSP.Tasks
                     state["targetUPosition"] = new JsonObject { ["x"] = point.x, ["y"] = point.y, ["z"] = point.z };
                 }
                 state["distanceToTarget"] = flight.Navigation.Distance;
+                var landing = flight.Navigation.LandingPosition;
+                state["landingPosition"] = new JsonObject { ["x"] = landing.x, ["y"] = landing.y, ["z"] = landing.z };
                 state["arrivalDistance"] = flight.Navigation.ArrivalDistance;
                 state["guidanceUpdates"] = flight.Navigation.GuidanceUpdates;
+                state["localRouteChecks"] = flight.Navigation.LocalRouteChecks;
+                state["localRouteSearches"] = flight.Navigation.LocalRouteSearches;
+                state["maxLocalRouteMilliseconds"] = flight.Navigation.MaxLocalRouteMilliseconds;
                 state["guidanceIntervalTicks"] = flight.Navigation.GuidanceIntervalTicks;
                 state["navigationPhase"] = flight.Navigation.Phase;
                 state["useWarp"] = flight.Navigation.UseWarp;
@@ -90,11 +125,21 @@ namespace AutomaticDSP.Tasks
                     now.AddSeconds(command.Request.TimeoutSeconds ?? 900), navigation);
             }
             var flight = command.Flight;
+            flight.EnsureAttached();
             if (player != flight.Player || flight.Error != null)
                 finishCommand(command, CommandFailed, flight.Error ?? "session_changed", "导航输入已中断。", now, null);
             else if (flight.Navigation.Arrived)
                 finishCommand(command, CommandSucceeded, null, null, now, null);
-            else command.Phase = flight.Navigation.Phase;
+            else
+            {
+                command.Phase = flight.Navigation.Phase;
+                // 运行中的任务也提供观测依据，调用方可区分输入推进与无输入的惯性滑行。
+                if (GameMain.gameTick - flight.SnapshotTick >= 60)
+                {
+                    command.Result = FlightResult(flight);
+                    flight.SnapshotTick = GameMain.gameTick;
+                }
+            }
         }
 
         private static bool TryReadUniversalPosition(JToken token, out VectorLF3 position)

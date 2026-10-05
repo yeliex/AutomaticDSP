@@ -98,7 +98,9 @@ namespace AutomaticDSP.State
                 return;
             }
 
-            if (gameTick % queryIntervalTicks != 0)
+            // 画面更新可能跨过多个逻辑 tick，不能等待恰好整除间隔的帧。
+            if (lastQueryDispatchGameTick >= 0 && gameTick > lastQueryDispatchGameTick &&
+                gameTick - lastQueryDispatchGameTick < queryIntervalTicks)
             {
                 return;
             }

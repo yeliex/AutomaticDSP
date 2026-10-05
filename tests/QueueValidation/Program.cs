@@ -31,6 +31,12 @@ static class Program
     static void Check(bool ok,string name){if(!ok)throw new Exception(name);Console.WriteLine("通过："+name);}
     static void Main()
     {
+        var navQueue=New();Add(navQueue,C("nav","navigateTo"),C("build-after-nav","placeBuilding"),C("move-after-nav","moveTo"),C("nav-craft","craftInventory"),C("nav-trash","discardInventoryItem"));navQueue.Update();
+        Check(Seen["nav"].OwnsPlayerOrders&&!Seen.ContainsKey("build-after-nav")&&!Seen.ContainsKey("move-after-nav")&&Seen["nav-craft"].Background&&Seen["nav-trash"].Status==CommandSucceeded,"导航阻止后续建造与移动但允许独立通道");
+        Add(navQueue,C("other-nav","navigateTo"));navQueue.Update();Check(!Seen.ContainsKey("other-nav"),"跨任务导航不能抢占正在运行的导航");
+        Complete.Add("nav");navQueue.Update();Check(Seen.ContainsKey("build-after-nav")&&Seen["move-after-nav"].OwnsPlayerOrders&&!Seen.ContainsKey("other-nav"),"导航完成后按顺序释放机甲通道");
+        navQueue=New();var background=Add(navQueue,C("nav-background-build","placeBuilding"));Add(navQueue,C("nav","navigateTo"));navQueue.Update();TaskCommandExecutor.Stops.Clear();navQueue.Cancel(background);navQueue.Update();
+        Check(TaskCommandExecutor.Stops.Count==0&&Seen["nav"].OwnsPlayerOrders&&Seen["nav"].Status==CommandRunning,"取消后台建造不会停止导航");
         var q=New();Add(q,C("move","moveTo"),C("craft","craftInventory"),C("research","researchTech"),C("trash","discardInventoryItem"));q.Update();
         Check(Seen.Count==4&&Seen["move"].OwnsPlayerOrders&&Seen["craft"].Background&&Seen["research"].Background&&Seen["trash"].Status==CommandSucceeded,"四通道与垃圾自动分流");
         q=New();var id=Add(q,C("build","placeBuilding"),C("move","moveTo"));q.Update();
