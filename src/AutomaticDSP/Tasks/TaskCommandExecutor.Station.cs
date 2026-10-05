@@ -7,12 +7,64 @@ namespace AutomaticDSP.Tasks
 {
     internal sealed partial class TaskCommandExecutor
     {
+        private void ExecuteRemoteLogisticsSetting(TaskState task, CommandState command, DateTimeOffset now)
+        {
+            var player = GameMain.mainPlayer;
+            if (player == null)
+            {
+                finishCommand(command, CommandFailed, "game_not_ready", "玩家不可用。", now, null);
+                return;
+            }
+            var planetId = player.planetId;
+            if (TryGetToken(command, "planetId", out var token) &&
+                !(token.Type == JTokenType.String && token.Value<string>() == "current") &&
+                (token.Type != JTokenType.Integer || !TryGetInt(command, "planetId", out planetId) || planetId <= 0))
+            {
+                finishCommand(command, CommandFailed, "invalid_command", "planetId 必须为正整数或 current。", now, null);
+                return;
+            }
+            var factory = GameMain.galaxy?.PlanetById(planetId)?.factory;
+            if (factory == null)
+            {
+                finishCommand(command, CommandFailed, "factory_unavailable", "目标行星尚无已建立的工厂；太空中须指定 planetId。", now, null);
+                return;
+            }
+            if (!TryGetTargetEntityId(task, command, out var entityId, out var errorMessage))
+            {
+                finishCommand(command, CommandFailed, "invalid_command", errorMessage, now, null);
+                return;
+            }
+            if (!TryGetEntity(factory, entityId, out var entity))
+            {
+                finishCommand(command, CommandFailed, "target_not_found", "目标实体不存在。", now, null);
+                return;
+            }
+            // 原生总控允许远程配置，直接物资搬运仍由各自命令校验本地范围。
+            if (command.NormalizedType == "setdispenser" || command.NormalizedType == "setdispensersetting")
+            {
+                ExecuteDispenserSetting(command, player, factory, entity, now);
+                return;
+            }
+            if (command.NormalizedType == "setveincollectorspeed")
+            {
+                ExecuteVeinCollectorSpeed(command, factory, entity, now);
+                return;
+            }
+            ExecuteStationSetting(command, player, factory, entity, now);
+        }
+
         private void ExecuteStationSetting(CommandState command, Player player, PlanetFactory factory, EntityData entity, DateTimeOffset now)
         {
             var station = entity.stationId > 0 ? factory.transport.stationPool[entity.stationId] : null;
-            if (station == null || station.isCollector || station.isVeinCollector)
+            if (station == null || ((station.isCollector || station.isVeinCollector) &&
+                command.NormalizedType != "setstationstorage" && command.NormalizedType != "transferstationitem"))
             {
                 finishCommand(command, CommandFailed, "invalid_station", "需要普通行星或星际运输站。", now, null);
+                return;
+            }
+            if (command.NormalizedType == "setstationsetting")
+            {
+                ExecuteStationOption(command, player, factory, entity, station, now);
                 return;
             }
             var desc = LDB.items.Select(entity.protoId).prefabDesc;
@@ -61,7 +113,8 @@ namespace AutomaticDSP.Tasks
                 if (direction == "toStation")
                 {
                     // 原生手动投料使用科技允许的总容量，不受物流需求上限滑块限制。
-                    var capacity = desc.stationMaxItemCount + (station.isStellar ? GameMain.history.remoteStationExtraStorage : GameMain.history.localStationExtraStorage);
+                    var capacity = desc.stationMaxItemCount + (station.isStellar && !station.isCollector && !station.isVeinCollector
+                        ? GameMain.history.remoteStationExtraStorage : GameMain.history.localStationExtraStorage);
                     var count = Math.Min(requestedItems, Math.Max(0, capacity - station.storage[index].count));
                     inc = 0;
                     taken = count == 0 ? 0 : TakePlayerInventory(player, inventory, itemId, count, out inc);
@@ -85,16 +138,25 @@ namespace AutomaticDSP.Tasks
             {
                 var index = GetInt(command, "storageIndex", -1);
                 var itemId = GetInt(command, "itemId", -1);
-                var capacity = desc.stationMaxItemCount + (station.isStellar ? GameMain.history.remoteStationExtraStorage : GameMain.history.localStationExtraStorage);
+                var collecting = station.isCollector || station.isVeinCollector;
+                var capacity = desc.stationMaxItemCount + (station.isStellar && !collecting ? GameMain.history.remoteStationExtraStorage : GameMain.history.localStationExtraStorage);
                 var max = GetInt(command, "max", capacity);
                 if (index < 0 || index >= station.storage.Length || itemId < 0 ||
-                    (itemId > 0 && (LDB.items.Select(itemId) == null || !GameMain.history.ItemUnlocked(itemId))) ||
+                    (itemId > 0 && (LDB.items.Select(itemId) == null || (!collecting && !GameMain.history.ItemUnlocked(itemId)))) ||
                     max < 0 || max > capacity ||
                     !Enum.TryParse(GetString(command, "localLogic", "None"), true, out ELogisticStorage local) || !Enum.IsDefined(typeof(ELogisticStorage), local) ||
                     !Enum.TryParse(GetString(command, "remoteLogic", "None"), true, out ELogisticStorage remote) || !Enum.IsDefined(typeof(ELogisticStorage), remote) ||
                     (!station.isStellar && remote != ELogisticStorage.None))
                 {
                     finishCommand(command, CommandFailed, "invalid_command", "货槽、物品、容量或物流模式无效。", now, null);
+                    return;
+                }
+                // 采集槽由原生产物决定，总控只允许供应或仓储，不能改成需求或替换产物。
+                if (collecting && (itemId <= 0 || itemId != station.storage[index].itemId ||
+                    (station.isVeinCollector && (local == ELogisticStorage.Demand || remote != ELogisticStorage.None)) ||
+                    (station.isCollector && (remote == ELogisticStorage.Demand || local != station.storage[index].localLogic))))
+                {
+                    finishCommand(command, CommandFailed, "invalid_command", "采集槽必须保留原物品；大矿机仅支持本地供应/仓储，轨道采集器仅支持星际供应/仓储。", now, null);
                     return;
                 }
                 for (var i = 0; i < station.storage.Length; i++)
@@ -104,11 +166,18 @@ namespace AutomaticDSP.Tasks
                         return;
                     }
                 // 原生方法负责退回旧货物、清理订单及刷新物流配对。
+                var previous = station.storage[index];
+                if (factory.planet != GameMain.localPlanet && previous.itemId != itemId && previous.count > 0)
+                {
+                    // 对齐原生远程重置：旧货物留在来源行星成为垃圾，不远程返还到机甲。
+                    GameMain.data.trashSystem.AddTrashOnPlanet(previous.itemId, previous.count, previous.inc, station.entityId, factory.planet);
+                    factory.transport.SetStationStorage(station.id, index, 0, 0, ELogisticStorage.None, ELogisticStorage.None, null);
+                }
                 factory.transport.SetStationStorage(station.id, index, itemId, max, local, remote, player);
                 var store = station.storage[index];
                 finishCommand(command, CommandSucceeded, null, null, now, new JsonObject
                 {
-                    ["entityId"] = entity.id, ["storageIndex"] = index, ["itemId"] = store.itemId,
+                    ["planetId"] = factory.planetId, ["entityId"] = entity.id, ["storageIndex"] = index, ["itemId"] = store.itemId,
                     ["max"] = store.max, ["count"] = store.count,
                     ["localLogic"] = store.localLogic.ToString(), ["remoteLogic"] = store.remoteLogic.ToString()
                 });

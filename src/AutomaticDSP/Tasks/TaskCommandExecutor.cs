@@ -72,6 +72,9 @@ namespace AutomaticDSP.Tasks
                 case "exitwarp":
                     ExecuteFlight(command, now);
                     return;
+                case "setlogisticsroute":
+                    ExecuteLogisticsRoute(command, now);
+                    return;
                 case "noop":
                     ExecuteNoopLocked(command, now);
                     return;
@@ -120,8 +123,11 @@ namespace AutomaticDSP.Tasks
                 case "setsplitterpriority":
                 case "setstationstorage":
                 case "setstationvehicles":
+                case "setstationsetting":
                 case "setstationchargepower":
                 case "transferstationitem":
+                case "setdispensersetting":
+                case "setveincollectorspeed":
                 case "setdispenser":
                 case "setdispensercouriers":
                     ExecuteLogisticsSettingLocked(task, command, now);

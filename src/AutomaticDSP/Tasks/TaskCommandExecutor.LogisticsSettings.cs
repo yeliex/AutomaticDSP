@@ -10,6 +10,13 @@ namespace AutomaticDSP.Tasks
     {
         private void ExecuteLogisticsSettingLocked(TaskState task, CommandState command, DateTimeOffset now)
         {
+            if (command.NormalizedType == "setstationstorage" || command.NormalizedType == "setstationchargepower" ||
+                command.NormalizedType == "setstationsetting" || command.NormalizedType == "setdispenser" ||
+                command.NormalizedType == "setdispensersetting" || command.NormalizedType == "setveincollectorspeed")
+            {
+                ExecuteRemoteLogisticsSetting(task, command, now);
+                return;
+            }
             if (!TryGetPlayer(out var player, out var errorCode, out var errorMessage) ||
                 !TryValidateCurrentPlanet(command, player, out errorCode, out errorMessage))
             {

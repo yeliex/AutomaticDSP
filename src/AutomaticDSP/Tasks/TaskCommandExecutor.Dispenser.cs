@@ -1,4 +1,6 @@
 using System;
+using Newtonsoft.Json.Linq;
+using UnityEngine;
 using AutomaticDSP.Serialization;
 using static AutomaticDSP.Tasks.TaskStatusNames;
 
@@ -37,6 +39,51 @@ namespace AutomaticDSP.Tasks
                     ["itemId"] = dispenser.filter, ["playerMode"] = dispenser.playerMode.ToString(),
                     ["storageMode"] = dispenser.storageMode.ToString(), ["pairCount"] = dispenser.pairCount
                 });
+                return;
+            }
+            if (command.NormalizedType == "setdispensersetting")
+            {
+                var setting = GetString(command, "setting", "");
+                if (!TryGetToken(command, "value", out var value))
+                {
+                    finishCommand(command, CommandFailed, "invalid_command", "需要 setting 与 value。", now, null);
+                    return;
+                }
+                var result = new JsonObject { ["planetId"] = factory.planetId, ["entityId"] = entity.id, ["setting"] = setting };
+                if (setting == "courierAutoReplenish" && value.Type == JTokenType.Boolean)
+                {
+                    var before = player.package.GetItemCount(5003);
+                    dispenser.courierAutoReplenish = value.Value<bool>();
+                    // 使用总控原生补充路径，真实扣除普通背包，而非将货箱库存变成运力。
+                    factory.EntityAutoReplenishIfNeeded(entity.id, Vector2.zero);
+                    result["value"] = dispenser.courierAutoReplenish;
+                    result["consumedCount"] = before - player.package.GetItemCount(5003);
+                    result["inventoryCount"] = player.package.GetItemCount(5003);
+                    result["courierCount"] = dispenser.idleCourierCount + dispenser.workCourierCount;
+                }
+                else if (setting == "chargePowerKW")
+                {
+                    var work = LDB.items.Select(entity.protoId).prefabDesc.workEnergyPerTick;
+                    var min = work / 2 / 5000 * 300;
+                    var max = work * 5 / 5000 * 300;
+                    result["minPowerKW"] = min;
+                    result["maxPowerKW"] = max;
+                    if (value.Type != JTokenType.Integer || !int.TryParse(value.ToString(), out var kw) ||
+                        kw < min || kw > max || kw % 300 != 0)
+                    {
+                        finishCommand(command, CommandFailed, "invalid_command", "充电功率必须是原生范围内的整数千瓦，且为 300 的倍数。", now, result);
+                        return;
+                    }
+                    factory.powerSystem.consumerPool[dispenser.pcId].workEnergyPerTick = (long)kw / 300 * 5000;
+                    result["value"] = kw;
+                    result["workEnergyPerTick"] = factory.powerSystem.consumerPool[dispenser.pcId].workEnergyPerTick;
+                }
+                else
+                {
+                    finishCommand(command, CommandFailed, "invalid_command", "设置名称或值类型无效。", now, null);
+                    return;
+                }
+                finishCommand(command, CommandSucceeded, null, null, now, result);
                 return;
             }
             var requested = GetInt(command, "count", -1);
