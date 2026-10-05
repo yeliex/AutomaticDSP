@@ -603,11 +603,16 @@ query ObserveStorage {
 - `SKIPPED`
 - `CANCELLED`
 
+`navigateTo` 运行期间每 60 游戏 tick 刷新命令 `result`，包含 `appliedTicks`、`distanceToTarget`、`navigationPhase`、`warpStatus` 和真实飞行状态。`inputReleased:false` 表示输入仍持有，终态释放后为 true；`manual_override` 附带 `overrideReason` 指出接管来源。导航独占机甲通道，后续移动与建造下达等待；原生动作数组重建后自动恢复本命令输入，其他飞行输入占用则报 `flight_input_conflict`。曲速启动遵守原生科技、能量与翘曲器校验，没有额外目标距离下限；低能退出后，远程导航在完全退出至少 60 游戏 tick 且核心恢复到容量 90% 后重新检查并启动曲速，近程改用普通航行。人工输入或原生订单期间 navigateTo 临时让出输入（navigationPhase:manualOverride），输入释放及订单结束后从实际位置恢复导航，保留原超时；永久停止须取消任务。低层飞行命令仍以 manual_override 终止。普通巡航保留制动能量后优先提速至航速上限。
+
+固态星 `navigateTo` 使用行星实际 Physics 碰撞体检查停靠和近地航段。指定点被建筑占用时，在其周围 36 米内搜索可落地位置；近地航向与速度每 6 游戏 tick 更新并在帧间复用输入；每 30 游戏 tick 检查前方短航段，保留安全停靠点和可达绕行点，仅在受阻或抵达绕行点时重新寻路。进入到达容差并减速后，锁定当前位置的安全落地柱，不继续追逐中心。结果 `localRouteChecks`、`localRouteSearches`、`maxLocalRouteMilliseconds` 分别记录路线复核次数、重新求路次数和单次复核最大耗时（毫秒）。结果 `landingPosition` 为实际停靠目标，`distanceToTarget` 相对于该点计算，容差仍按请求值执行。无可用停靠点或局部路径时分别返回 `landing_area_blocked`、`local_route_blocked`，不会通过穿越建筑或直接修改位置完成。
+
 第一版命令类型：
 
 - `moveTo`
 - `mineTarget`
 - `autoReplenishMechaFuel`
+- `autoReplenishMechaWarper`
 - `entityFastFillIn`
 - `entityFastTakeOut`
 - `dismantleEntity`
@@ -615,8 +620,10 @@ query ObserveStorage {
 - `setStorageLimit`
 - `setSorterFilter`
 - `setSplitterPriority`
-- `setStationChargePower`：普通运输站目标与整数 `powerMW`，必须为 3 的倍数且在原生充电滑块范围内；保留当前星球、建造范围及站类型校验，只设置充电上限，不补充储能。
+- `setStationChargePower`：普通运输站目标与整数 `powerMW`，必须为 3 的倍数且在原生充电滑块范围内；支持 planetId 指定远程已建立工厂的普通运输站，只设置充电上限，不补充储能。
+- `setStationStorage`：`planetId` 可指定已建立工厂的远程星球；省略或 current 使用当前星球，太空中须指定正整数。保留货槽、物品科技、容量、重复物品及站类型校验。大矿机原采集槽支持本地 None/Supply，轨道采集器支持星际 None/Supply 并保留本地模式；不能清空、换物品或设为需求，两者容量使用本地物流科技加成。远程替换普通站非空货槽按原生总控规则将旧货物留在来源行星成为垃圾。直接物资搬运的本地限制不变。
 - `craftInventory`
+- `transferStationItem`：在当前星球建造范围内，按数量手动取放普通运输站、大矿机或轨道采集器货槽中的已配置物品；使用原生库存操作并保留增产点数。采集器手动存入容量使用本地物流科技加成，货槽 max 仅控制物流阈值，不限制手动存入。
 - `removeForgeTask`：当前制造队列 `index` 和 `recipeId`，调用原生取消及材料退款。
 - `cancelPrebuild`：当前行星正整数 `prebuildId`，在建造范围内原生拆除未建成的预建；走普通队列。
 - `dismissNotice`：按 `noticeId` 确认信息提示，并关闭仍可见的对应窗口。
@@ -672,6 +679,8 @@ query ObserveStorage {
 ```
 
 `autoReplenishMechaFuel` 用于把背包中的可用燃料补充到机甲燃烧室。它调用游戏原生 `Mecha.AutoReplenishFuelAll()`，因此哪些物品可以放入燃烧室由游戏内部逻辑决定，外部 Agent 不需要传入燃料配方或燃料类型。
+
+`autoReplenishMechaWarper` 需解锁机甲曲速飞行，调用原生 `Mecha.AutoReplenishWarper()`，从普通背包向机甲翘曲仓补充最多 20 个真实翘曲器，并按原生容量返还未装入物品。结果为 `movedCount`、`warperCount`、`packageCount`。翘曲仓已有物品时允许零转移成功；两处均为空返回 `missing_warper`。该命令不改变自动补充开关。
 
 ```json
 {
@@ -832,6 +841,8 @@ query ObserveStorage {
 ```
 
 也可以使用端点对象连接建筑端口。端点对象支持 `entityId`、`commandId`、`entityIndex`、`slot` 和可选 `position`；`commandId` 引用同一任务内之前成功命令的结果，`entityIndex` 用于选择 `entityIds` 中的某个实体。
+
+同时提供 `points` 时，点列直接作为新带段预览，实体端点只建立连接关系，不自动补齐建筑端口锚点。需要完整接入建筑出入料口时，显式点列应包含按实际端口姿态换算的锚点，再沿端口方向连接；未提供 `points` 的直线模式从实际端点生成原生吸附线段。连接成功不等于实体带段已延伸到端口，落成后需核对实际坐标与连接。
 
 ```json
 {
@@ -1178,3 +1189,11 @@ Invoke-RestMethod `
 - `{"type":"setSplitterPriority","entityId":278,"slot":0,"priority":true}`：端口 slot 为 0–3，必须已接已建传送带；按原生 `SetPriority` 设置该方向的优先端口。输入与输出各有一组优先级。false 取消该端口的优先级（若它是当前优先端口）；取消输出优先级时会同时清除原生输出过滤器。启用时保留已有输出过滤设置。本命令不提供分流器过滤物品修改。
 
 查询 `factory.factoryStorage.storagePool { size bans }`、`factory.factorySystem.inserterPool { filter }` 和 `factory.cargoTraffic.splitterPool { inPriority outPriority input0 output0 outFilter }` 验收。分流器返回的 inputBeltId/outputBeltId 为 beltPool 组件 ID，不是实体 ID；设置端口号通过 `objectConnections` 确认。
+
+## 远程运输站与航路
+
+- `setStationSetting`：按原生范围逐项配置运输距离、起送量、曲速距离、翘曲器必备、轨道采集器、堆叠、自动补充、分组及优先级。远程自动补充真实扣除机甲普通背包。
+- `setLogisticsRoute`：按明确 ID 增删点对点、星际物品航路和禁运，调用原生交通刷新。参数见 [物流设置](../skills/automatic-dsp/references/interface/game-control.md#运输站远程设置与航路)，订单和配对见 [查询契约](../skills/automatic-dsp/references/interface/game-state.md#原生物流订单与配对)。
+
+- `setDispenserSetting`：远程配送器自动补充（真实扣 5003）与充电功率；`setDispenser` 的过滤／配送模式也支持远程。直接机器人取放仍保留本地限制。
+- `setVeinCollectorSpeed`：按原生总控滑块设置大矿机速度，不改变科技、库存、矿量或能源；耗电与产出由原生 tick 推进。参数见 [配送器与大矿机](../skills/automatic-dsp/references/interface/game-control.md#配送器远程设置与大矿机速度)。

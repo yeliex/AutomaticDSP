@@ -328,3 +328,67 @@ Mod 不定时自动关闭提示。LLM 读取并理解消息后，以 `dismissNot
 `height`、`modifiedHeight` 是距行星中心的半径，单位米；`realRadius` 是行星半径，`waterHeight` 是原生水面偏移，`waterItemId` 为原生液体物品编号。高度信息用于筛选地形，不代表建筑可建性；原生建造还会对每个 `prefabDesc.landPoints` 发射射线并检查水面、碰撞、科技等条件。
 
 海岸选址时，先从 `items.prefabDesc` 读取 `landPoints { x y z }`、`landOffset`、`waterPoints { x y z }`、`waterTypes`、`allowBuildInWater` 和 `needBuildInWaterTech`。由外部 Agent 用建筑姿态转换落地点（原生陆地点局部 y 置零），查询中心及每个落地点的地形高度，并给网格吸附留出余量。不能仅凭中心在陆地上就铺开整排建筑；失败后刷新实际落点和原生错误，调整陆地布局后再提交。
+
+## 原生物流订单与配对
+
+复用原生对象，不另设派生物流根。所有池须过滤有效 ID 并分页；offset/limit 作用于过滤后的列表。站点身份同时保留 planetId、entityId、本地 id 和全局 gid，不能混用。
+
+```graphql
+{
+  metadata { gameTick localPlanetId }
+  data { galacticTransport {
+    stationPool(where: { gid_gt: 0 }, offset: 0, limit: 32) {
+      gid id planetId entityId isStellar isCollector isVeinCollector pcId minerId
+      energy energyMax warperCount warperMaxCount
+      idleDroneCount workDroneCount idleShipCount workShipCount
+      tripRangeDrones tripRangeShips warpEnableDist deliveryDrones deliveryShips
+      warperNecessary includeOrbitCollector pilerCount
+      droneAutoReplenish shipAutoReplenish remoteGroupMask routePriority
+      storage { itemId count max inc localLogic remoteLogic localOrder remoteOrder }
+    }
+    station2stationRoutes(offset: 0, limit: 128)
+    astro2astroRoutes(offset: 0, limit: 128) { key value { enable comment } }
+    astro2astroBans(offset: 0, limit: 128)
+  } }
+}
+```
+
+行星内站点从 `factories(where: { planetId: 102 }, limit: 1) { transport { stationPool(...) { ... } } }` 读取；星际全局池不包含普通行星站。充电上限位于站点 `pcId` 对应的 `powerSystem.consumerPool.workEnergyPerTick`，乘 60 后为瓦。
+
+大矿机也在行星 `transport.stationPool` 中，按 `id_gt: 0` 和 `isVeinCollector: true` 筛选；其 `minerId` 关联同工厂 `factorySystem.minerPool` 的 speed、veinCount 和采矿状态。轨道采集器可在全局池按 `isCollector: true` 筛选。采集槽物品由原生矿物/气体产物决定，不能当普通可选货槽；供应/仓储开关及容量可用 `setStationStorage` 修改。库存变化包含开采、出带和物流取货，不能仅凭库存差额推算运输吞吐。
+
+```graphql
+{
+  data { galacticTransport {
+    stationPool(where: { gid: 1 }, limit: 1) {
+      gid workShipCount workDroneCount
+      workShipDatas(offset: 0, limit: 10) {
+        shipIndex planetA planetB otherGId direction stage
+        itemId itemCount inc warperCnt warpState uPos
+      }
+      workShipOrders(offset: 0, limit: 10) {
+        itemId thisIndex thisOrdered otherStationGId otherIndex otherOrdered
+      }
+      workDroneDatas(offset: 0, limit: 100) { itemId itemCount }
+      workDroneOrders(offset: 0, limit: 100) {
+        itemId thisIndex thisOrdered otherStationId otherIndex otherOrdered
+      }
+      localPairCount localPairs(offset: 0, limit: 128) {
+        supplyId supplyIndex demandId demandIndex
+      }
+      remotePairTotalCount remotePairOffsets
+      remotePairs(offset: 0, limit: 128) {
+        supplyId supplyIndex demandId demandIndex
+      }
+    }
+  } }
+}
+```
+
+将示例 gid 替换为查询所得值。`workShipDatas` 与 `workShipOrders` 按相同数组索引关联，只读取前 `workShipCount` 项；无人机同理使用 `workDroneCount`。返回数组可能包含容量预留或旧数据，不能按数组长度统计运力，也不能用 shipIndex 作为工作数组索引。
+
+`itemCount` 是船实际携带量，`thisOrdered` / `otherOrdered` 是两端预约，正数表示待送入，负数表示待取出；货槽 localOrder/remoteOrder 是预约汇总，不等于实际在途货物，更不是 max-count。空船可有非零订单；抵达另一站后该端订单可清零，而返程船仍携货。用其他端 gid 关联目标站，thisIndex/otherIndex 是零起始货槽索引。
+
+本地配对有效前缀为 localPairCount，supplyId/demandId 是同工厂站点 id；远程为全局 gid。remotePairs 含原生分类分段与重复候选，remotePairOffsets 给出边界：remotePairTotalCount 仅对应 offsets[1] 的基础配对数，整个分段有效数据至 offsets[6]，不要按数组容量统计或把所有分段相加当成独立航次。配对是当前调度候选，实际起飞还受运力、能源、范围、货量、翘曲器及优先级约束。
+
+原生航路键为 64 位整数：点对点键低／高 32 位为排序后的两个 gid；天体键低 22 位为较小 astroId，接着 22 位为较大 astroId，余下高位为 itemId。解析时使用整数／BigInt，避免 JavaScript Number 精度损失。关系无方向，不应把键中的先后当成供需方向。跨请求状态会继续推进，应在同一响应中读取需要对照的订单和货物，并记录 gameTick。
