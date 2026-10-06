@@ -13,9 +13,31 @@ namespace AutomaticDSP.Tasks
             var t = segment.sqrMagnitude > 0 ? Mathf.Clamp01(Vector3.Dot(collider.pos - start, segment) / segment.sqrMagnitude) : 0;
             var bound = collider.ext.magnitude + collider.radius + clearance * 1.733f;
             if ((start + segment * t - collider.pos).sqrMagnitude > bound * bound) return false;
+            if (collider.shape == EColliderShape.Capsule)
+            {
+                // ext 是世界坐标半轴；包围球只用于粗筛，否则塔旁空地会被误判为实体内部。
+                var axisStart = collider.pos - collider.ext;
+                var axisEnd = collider.pos + collider.ext;
+                var distance = Math.Min(Math.Min(Maths.DistancePointLine(start, axisStart, axisEnd),
+                    Maths.DistancePointLine(end, axisStart, axisEnd)),
+                    Math.Min(Maths.DistancePointLine(axisStart, start, end), Maths.DistancePointLine(axisEnd, start, end)));
+                var axis = axisEnd - axisStart;
+                var offset = start - axisStart;
+                double a = segment.sqrMagnitude, b = Vector3.Dot(segment, axis), c = axis.sqrMagnitude;
+                double d = Vector3.Dot(segment, offset), e = Vector3.Dot(axis, offset);
+                var denominator = a * c - b * b;
+                // 两条有限线段的最近点在端点或内部公垂线上；平行及零长度由端点检查覆盖。
+                if (denominator > 0.000001 * a * c)
+                {
+                    var alongSegment = (b * e - c * d) / denominator;
+                    var alongAxis = (a * e - b * d) / denominator;
+                    if (alongSegment >= 0 && alongSegment <= 1 && alongAxis >= 0 && alongAxis <= 1)
+                        distance = Math.Min(distance, (offset + segment * (float)alongSegment - axis * (float)alongAxis).magnitude);
+                }
+                return distance <= collider.radius + clearance;
+            }
             if (collider.shape != EColliderShape.Box)
             {
-                // 胶囊 ext 是世界坐标半轴，负分量不能当成负尺寸。
                 var radius = collider.radius + collider.ext.magnitude + clearance;
                 return (start + segment * t - collider.pos).sqrMagnitude <= radius * radius;
             }

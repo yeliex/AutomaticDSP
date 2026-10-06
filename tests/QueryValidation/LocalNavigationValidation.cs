@@ -25,12 +25,35 @@ static class LocalNavigationValidation
         }
         bool Hit(object box, object a, object b, float padding = 0) =>
             (bool)navigation.GetMethod("Intersects", methods)!.Invoke(null, new[]{box, a, b, (object)padding})!;
+        object Capsule(float x, float y, float z, float ex, float ey, float ez, float radius)
+        {
+            var collider = Box(x, y, z, ex, ey, ez);
+            colliderType.GetField("idType")!.SetValue(collider, 0x02000001);
+            colliderType.GetField("radius")!.SetValue(collider, radius);
+            return collider;
+        }
+        var capsule = Capsule(0, 220, 0, 0, -11, 0, 4.2f);
+        Check(!Hit(capsule, Vector(13.6f,220,0), Vector(13.6f,220,0), 1.5f), "胶囊旁安全起点不因包围球被判在实体内部");
+        Check(Hit(capsule, Vector(-20,220,0), Vector(20,220,0)), "航段中部穿过胶囊轴线仍被阻挡");
+        Check(Hit(capsule, Vector(0,240,0), Vector(0,233,0)), "平行航段进入胶囊端帽仍被阻挡");
+        Check(!Hit(capsule, Vector(6,200,0), Vector(6,240,0), 1.5f), "平行航段在胶囊安全余量之外保持可达");
+        Check(Hit(capsule, Vector(5,220,0), Vector(5,220,0), 1.5f), "胶囊仍保留机甲安全余量");
+        Check(Hit(Capsule(0,220,0,0,0,0,4.2f), Vector(-10,220,0), Vector(10,220,0)), "零长度胶囊轴按球体检查");
         var tower = Box(0, 220, 0, 4, 20, 4);
         Check(Hit(tower, Vector(-12, 215, 0), Vector(12, 215, 0)), "航段穿过物流塔碰撞体时识别阻挡");
         Check(!Hit(tower, Vector(-12, 215, 8), Vector(12, 215, 8)), "旁侧空航段不误判阻挡");
         Check(Hit(Box(0, 220, 0, -4, 20, -4), Vector(-12, 215, 0), Vector(12, 215, 0)), "负碰撞尺寸仍按实际范围避障");
         var listType = typeof(List<>).MakeGenericType(colliderType);
         var colliders = Activator.CreateInstance(listType)!;
+        var observed = Activator.CreateInstance(listType)!;
+        listType.GetMethod("Add")!.Invoke(observed, new[]{Capsule(146.423874f,34.34897f,-148.275543f,
+            7.48758554f,1.756481f,-7.582273f,4.2f)});
+        foreach (var observedStart in new[]{Vector(144.546631f,40.1335945f,-132.851639f),Vector(180.838867f,49.36261f,-165.363724f)})
+        {
+            var observedRoute = new object?[]{observed,observedStart,Vector(93.73853f,34.0581474f,-173.3584f),200f,null};
+            Check((bool)navigation.GetMethod("TryWaypoint",methods)!.Invoke(null,observedRoute)!,
+                "现场斜向胶囊旁的地面和升空起点均可生成路线");
+        }
         listType.GetMethod("Add")!.Invoke(colliders, new[]{tower});
         var requested = Vector(0, 200, 0);
         var player = Vector(-20, 199, 0);
