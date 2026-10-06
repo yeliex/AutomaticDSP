@@ -36,6 +36,10 @@ static class FlightValidation
         Set(mecha, "coreEnergy", 10000d); Sail(); Check(!(bool)Get(input, "Boost")!, "不足原生制动储备时不继续加速");
         Set(mecha, "coreEnergy", 250000000d); Set(nav, "wantedSpeed", 1000d); Sail();
         Check(!(bool)Get(input, "Boost")!, "达到航速上限时停止加速");
+        Set(nav, "wantedSpeed", 45d);
+        Set(player, "uVelocity", Activator.CreateInstance(game.GetType("VectorLF3", true)!, 48d, 0d, 0d)!);
+        Sail(); Check((float)Get(input, "Thrust")! == 0, "低于原生推进下限的限速区间松开推进，避免反复加速到100");
+        Set(player, "uVelocity", velocity);
         var controller = Native("PlayerController"); Set(input, "controller", controller);
         var actions = Array.CreateInstance(game.GetType("PlayerAction", true)!, 4);
         var names = new[]{"actionWalk", "actionFly", "actionSail", "actionDrift"};
@@ -45,6 +49,9 @@ static class FlightValidation
             Set(controller, names[i], action); actions.SetValue(action, i);
         }
         Set(controller, "actions", actions);
+        Set(player,"controller",controller);
+        var sailAction = Get(controller,"actionSail")!;
+        Set(sailAction,"player",player); Set(sailAction,"maxWarpSpeed",1000000f); Set(sailAction,"warpSpeedControl",1d);
         void Attach(object owner) => inputType.GetMethod("EnsureAttached", fields)!.Invoke(owner, null);
         Set(input,"Navigation",nav);
         Attach(input); Check(actions.GetValue(2)!.GetType().Name == "InputAction", "导航包装原生动作输入");
@@ -61,7 +68,7 @@ static class FlightValidation
         var direction=Activator.CreateInstance(game.GetType("VectorLF3",true)!,0d,0d,1d)!;
         void Warp(long tick = 0) => navType.GetMethod("UpdateWarp",fields)!.Invoke(nav,new object?[]{input,direction,null,tick});
         Warp();
-        Check((string?)Get(nav,"WarpStatus")=="insufficient_energy","短于旧距离门槛的曲速请求进入原生能量校验");
+        Check((string?)Get(nav,"WarpStatus")=="distance_too_short","导航在0.5 AU内不请求曲速");
         Set(mecha,"maxWarpSpeed",1000000f); Set(mecha,"warpStartPowerPerSpeed",100d); Set(mecha,"coreEnergy",100000001d);
         Set(player,"uRotation",Activator.CreateInstance(unity.GetType("UnityEngine.Quaternion",true)!,0f,0f,0f,1f)!);
         Set(player,"uVelocity",direction);
@@ -79,22 +86,51 @@ static class FlightValidation
         Check((string?)Get(input,"Mode")=="idle" && (string?)Get(nav,"Phase")=="landing",
             "下降途中切换 Walk 后继续等待接地，不反复起飞");
         Set(nav,"landing",false); Set(nav,"Distance",5000d);
+        Set(input,"WarpToggle",false); Set(nav,"Distance",19999d);
         Warp();
-        Check((bool)Get(input,"WarpToggle")! && (string?)Get(nav,"WarpStatus")=="starting","短距离且略高于原生启动耗能即可请求曲速");
+        Check(!(bool)Get(input,"WarpToggle")! && (string?)Get(nav,"WarpStatus")=="distance_too_short",
+            "电量和翘曲器充足时，低于0.5 AU仍不启动");
+        Set(nav,"Distance",20000d); Warp();
+        Check(!(bool)Get(input,"WarpToggle")!, "退出距离大于0.5 AU时不会刚达最短启动距离就启动");
+        Set(nav,"Distance",52400d); Warp();
+        Check(!(bool)Get(input,"WarpToggle")!, "启动还须留出退出范围之外的一秒普通航程");
+        Set(nav,"Distance",52401d); Warp();
+        Check((bool)Get(input,"WarpToggle")!, "超出动态退出范围和启动余量后允许翘曲");
+        Set(nav,"nextWarpTick",0L); Set(input,"WarpToggle",false);
+        Set(mecha,"maxWarpSpeed",100000f); Set(nav,"Distance",20000d); Warp();
+        Check((bool)Get(input,"WarpToggle")! && (string?)Get(nav,"WarpStatus")=="starting","达到0.5 AU后检查原生条件并允许启动");
         Set(nav,"WarpUsed",true); Set(nav,"Distance",100000000d);
-        Set(input,"WarpToggle",false); Set(mecha,"coreEnergy",200000000d);
+        Set(mecha,"warpKeepingPowerPerSpeed",10d);
+        Set(input,"WarpToggle",false); Set(input,"Boost",true); Set(mecha,"coreEnergy",200000000d);
         Warp(60);
         Check(!(bool)Get(input,"WarpToggle")! && (string?)Get(nav,"WarpStatus")=="recharging",
             "低能退出后即使足够原生启动耗能也等待充分充能");
+        Check(!(bool)Get(input,"Boost")!, "远程回充优先恢复曲速电量，不消耗输出继续普通加速");
         Set(mecha,"coreEnergy",900000000d); Set(nav,"nextWarpTick",120L);
         Warp(60);
         Check(!(bool)Get(input,"WarpToggle")!,"曲速完全退出后等待原生状态稳定");
         Warp(120);
         Check((bool)Get(input,"WarpToggle")! && (string?)Get(nav,"WarpStatus")=="starting",
             "同一导航充分充能后再次请求原生曲速");
-        Set(input,"WarpToggle",false); Set(nav,"Distance",5000d); Warp(180);
+        Set(nav,"Distance",50000d); Set(mecha,"coreEnergy",200000000d); Set(input,"WarpToggle",false);
+        Warp(180);
+        Check((bool)Get(input,"WarpToggle")! && (string?)Get(nav,"WarpStatus")=="starting",
+            "剩余短航程在20%电量即可恢复曲速，无须等待90%");
+        Set(input,"WarpToggle",false); Set(nav,"Distance",5000d); Warp(240);
         Check(!(bool)Get(input,"WarpToggle")! && (string?)Get(nav,"WarpStatus")=="approaching",
             "退出曲速后的近程不反复消耗翘曲器");
+        Set(nav,"Distance",100000000d); Set(nav,"UniversalPosition",Activator.CreateInstance(game.GetType("VectorLF3",true)!,0d,0d,100000000d)!);
+        Set(player,"warpCommand",true); Set(player,"warpState",0.5f); Set(input,"Thrust",-1f);
+        Warp(300);
+        Check((float)Get(input,"Thrust")! == 1 && !(bool)Get(input,"WarpToggle")!,
+            "翘曲巡航不继承普通航速制动，保持原生速度倍率");
+        Set(player,"warpState",0f); Set(nav,"Distance",5501d); Set(input,"WarpToggle",false);
+        Warp(301);
+        Check(!(bool)Get(input,"WarpToggle")!, "参考运输船，低曲速时在5000米加普通航速余量之外保持曲速");
+        Set(nav,"Distance",5500d); Warp(302);
+        Check((bool)Get(input,"WarpToggle")!, "达到运输船公式的低速退出距离时退出曲速");
+        Set(nav,"nextWarpTick",360L);
+        Set(player,"warpCommand",false); Set(player,"warpState",0f);
         Set(nav,"nextGuidanceTick",999L);
         Set(nav,"LandingPosition",vector);
         Set(nav,"localWaypoint",Activator.CreateInstance(unity.GetType("UnityEngine.Vector3",true)!, -1f,0f,0f)!);
@@ -131,10 +167,54 @@ static class FlightValidation
             Set(target, "uPosition", distant); Set(target, "uPositionNext", distant);
             Set(target, "runtimeRotation", Activator.CreateInstance(unity.GetType("UnityEngine.Quaternion", true)!, 0f, 0f, 0f, 1f)!);
             Set(nav, "Target", target); Set(nav, "Position", vector);
+            Set(nav,"wantedSpeed",2000d); Set(input,"Direction",vector);
+            Set(player,"uVelocity",velocity); Set(mecha,"coreEnergy",1000000d);
+            Sail();
+            Check((bool)Get(input,"Boost")!, "固态星巡航低于全程制动储备时仍持续请求最大原生加速");
+            Set(mecha,"coreEnergy",250000000d);
             Set(player, "movementState", Enum.Parse(game.GetType("EMovementState", true)!, "Sail"));
             Set(player, "uVelocity", velocity);
             navType.GetMethod("Plan", fields)!.Invoke(nav, new object?[]{input, distant, null, false, false});
             Check((string?)Get(nav, "Phase") == "cruising", "远处对准近侧落点仍保持巡航阶段");
+            var near = Activator.CreateInstance(game.GetType("VectorLF3", true)!, 5000d, 0d, 0d)!;
+            Set(target,"uPosition",near); Set(target,"uPositionNext",near);
+            navType.GetMethod("Plan", fields)!.Invoke(nav, new object?[]{input, near, null, false, false});
+            Check((double)Get(nav,"wantedSpeed")! == 2000d, "接近固态星时保持最高普通航速，不按距离提前减速");
+            var nearLanding = Activator.CreateInstance(game.GetType("VectorLF3", true)!, 4800d, 100d, 0d)!;
+            navType.GetMethod("Plan", fields)!.Invoke(nav, new object?[]{input, nearLanding, null, false, false});
+            Check((float)Get(Get(input,"Direction")!,"y")! > 0,
+                "进入捕获范围前已经朝可见目标落点调整角度");
+            Set(target,"uPosition",Activator.CreateInstance(game.GetType("VectorLF3",true)!,0d,0d,20000000d)!);
+            Set(mecha,"maxWarpSpeed",600000f); Set(mecha,"warpStartPowerPerSpeed",400d);
+            Set(mecha,"warpKeepingPowerPerSpeed",80d); Set(mecha,"coreEnergyCap",3200000000d);
+            Set(mecha,"coreEnergy",2500000000d); Set(player,"uVelocity",direction); Set(input,"WarpToggle",false);
+            Warp(360);
+            Check((bool)Get(input,"WarpToggle")!, "真实机甲耗能参数下剩余两千万米在低于90%电量时可恢复翘曲");
+            Set(sailAction,"maxWarpSpeed",600000f);
+            Set(target,"uPosition",Activator.CreateInstance(game.GetType("VectorLF3",true)!,0d,0d,32441d)!);
+            Set(target,"uPositionNext",Get(target,"uPosition")!);
+            Set(player,"warpCommand",true); Set(player,"warpState",1f);
+            Set(input,"WarpToggle",false);
+            Warp(419);
+            Check(!(bool)Get(input,"WarpToggle")!, "满曲速600000米每秒时在32440米退出阈值之外继续翘曲");
+            Set(target,"uPosition",Activator.CreateInstance(game.GetType("VectorLF3",true)!,0d,0d,32440d)!);
+            Set(target,"uPositionNext",Get(target,"uPosition")!);
+            Warp(420);
+            Check((bool)Get(input,"WarpToggle")!, "抵近目标按原生退出尾程结束翘曲");
+            Set(player,"warpCommand",false); Set(player,"warpState",0f); Set(input,"WarpToggle",false);
+            Warp(480);
+            Check(!(bool)Get(input,"WarpToggle")! && (string?)Get(nav,"WarpStatus")=="approaching",
+                "抵近退出后仍在当前动态启动范围内时不重启翘曲");
+            Set(player,"uPosition",Activator.CreateInstance(game.GetType("VectorLF3",true)!,0d,0d,72440d)!);
+            direction=Activator.CreateInstance(game.GetType("VectorLF3",true)!,0d,0d,-1d)!;
+            Set(player,"uVelocity",direction);
+            Warp(540);
+            Check(!(bool)Get(input,"WarpToggle")! && (string?)Get(nav,"WarpStatus")=="aligning",
+                "越过目标后已满足距离条件，仍先等待重新对准目标");
+            Set(player,"uRotation",Activator.CreateInstance(unity.GetType("UnityEngine.Quaternion",true)!,0f,1f,0f,0f)!);
+            Warp(541);
+            Check((bool)Get(input,"WarpToggle")! && (string?)Get(nav,"WarpStatus")=="starting",
+                "越过目标后重新满足当前距离、航向及能量条件即可恢复翘曲");
             Set(player, "mecha", null!); Replenish("game_not_ready");
             Set(player, "mecha", mecha); Set(mecha, "thrusterLevel", 2);
             Replenish("tech_locked");

@@ -268,6 +268,16 @@ namespace AutomaticDSP.Tasks
                 wantedSpeed = 180;
                 Phase = "leavingPlanet";
             }
+            else if (Target != null && local == Target && !gas)
+            {
+                // 优先直达可见落点；背面落点先原生撞入地表，再补齐近地航段。
+                var landingDelta = targetWorld - player.uPosition;
+                var landingNormal = (targetWorld - Target.uPosition).normalized;
+                direction = VectorLF3.Dot(landingDelta.normalized, -landingNormal) > 0.25
+                    ? landingDelta : Target.uPosition - player.uPosition;
+                wantedSpeed = player.mecha.maxSailSpeed;
+                Phase = "directDescent";
+            }
             else if (Target != null && local == Target)
             {
                 var radial = player.uPosition - Target.uPosition;
@@ -293,6 +303,14 @@ namespace AutomaticDSP.Tasks
                 var surfaceDistance = delta.magnitude - (Target == null ? 0 : Target.realRadius);
                 var lead = Math.Min(30, Math.Max(0, surfaceDistance) / Math.Max(100, relativeVelocity.magnitude));
                 direction = delta + targetVelocity * lead;
+                if (Target != null && !gas)
+                {
+                    var landingDelta = targetWorld - player.uPosition;
+                    var landingNormal = (targetWorld - Target.uPosition).normalized;
+                    // 在进入捕获范围前修正入射点；地平线附近保留径向余量，避免高速擦过。
+                    if (VectorLF3.Dot(landingDelta.normalized, -landingNormal) > 0.25)
+                        direction = landingDelta + targetVelocity * lead;
+                }
                 if (Target == null && !player.warpCommand && !player.warping)
                 {
                     // 机头对准目标不等于速度已对准；提前抵消横向漂移，避免擦过后反复追点。
@@ -300,7 +318,7 @@ namespace AutomaticDSP.Tasks
                     direction -= lateral * Math.Min(3.5, delta.magnitude / Math.Max(100, relativeVelocity.magnitude));
                 }
                 // 原生 W 的普通推进目标至少 100m/s；到达范围即结束，不再反复刹停再加速。
-                wantedSpeed = Math.Min(player.mecha.maxSailSpeed, Target == null
+                wantedSpeed = Target != null && !gas ? player.mecha.maxSailSpeed : Math.Min(player.mecha.maxSailSpeed, Target == null
                     ? Math.Max(100, (surfaceDistance - Tolerance * 0.75) / 3.5)
                     : Math.Max(100, (surfaceDistance - 700) / 3.5));
                 Phase = "cruising";
@@ -370,10 +388,13 @@ namespace AutomaticDSP.Tasks
             if (alignment < 0.7)
                 speedLimit = Math.Min(speedLimit, Math.Max(120, player.mecha.maxSailSpeed * 0.3));
             // S 键制动按当前速度衰减，提前限速；不直接写入速度或抵消惯性。
-            input.Thrust = speed > speedLimit * 1.08 ? -1 : 1;
-            // 按原生制动耗能留余量；不固定扣留核心容量，远程巡航优先加速到航速上限。
-            var brakingReserve = player.mecha.thrustPowerPerAcc * player.mecha.reactorPowerConsRatio * 3 * (1.5 * speed + 50);
-            brakingReserve += 10000;
+            input.Thrust = speed > speedLimit * 1.08 ? -1 :
+                speedLimit < 100 && speed >= speedLimit ? 0 : 1;
+            // 固态星可用原生碰撞收速，持续请求最大原生加速，不随速度抬高全程制动储备。
+            // 太空点与气态星仍需主动收速，保留对应制动余量。
+            var brakingReserve = 10000.0;
+            if (Target == null || Target.type == EPlanetType.Gas)
+                brakingReserve += player.mecha.thrustPowerPerAcc * player.mecha.reactorPowerConsRatio * 3 * (1.5 * speed + 50);
             input.Boost = input.Thrust > 0 && speed < speedLimit - 1 && alignment > 0.95 &&
                 player.mecha.coreEnergy > brakingReserve;
         }
@@ -390,16 +411,9 @@ namespace AutomaticDSP.Tasks
             {
                 WarpUsed = true;
                 nextWarpTick = tick + 60;
-                // 不调用会遍历天体的 currentWarpSpeed；用无天体衰减的指数尾程作保守上界。
-                // 原生每 tick 退出 0.06667667，额外覆盖一次输入延迟及离散积分误差。
-                var state = Math.Min(1, player.warpState + 0.0055655558);
-                var exponent = Math.Log(1001);
-                var peak = mecha.maxWarpSpeed * (Math.Exp(exponent * state) - 1) / 1000;
-                var exitSeconds = state / (0.06667667 * 60) + 1.0 / 60;
-                var tail = mecha.maxWarpSpeed / 1000.0 * ((Math.Exp(exponent * state) - 1) / exponent - state) /
-                    (0.06667667 * 60) + peak * (2.0 / 60);
-                var exitDistance = Math.Max(Target == null ? Tolerance : 1200,
-                    tail + player.uVelocity.magnitude * exitSeconds + mecha.maxSailSpeed * 0.1);
+                // 参考运输船的原生退出距离；使用机甲实际曲速，计入天体衰减和原生速度控制。
+                var exitDistance = Math.Max(Tolerance,
+                    player.controller.actionSail.currentWarpSpeed * 0.0449 + 5000 + mecha.maxSailSpeed * 0.25);
                 var delta = (Target == null ? UniversalPosition.Value : Target.uPosition) - player.uPosition;
                 var velocity = observedVelocity - (Target == null ? VectorLF3.zero : (Target.uPositionNext - Target.uPosition) * 60);
                 // 与沿实际运动方向到最近点的路程比较；直接用退出时长乘当前曲速会过早退出。
@@ -408,10 +422,12 @@ namespace AutomaticDSP.Tasks
                     alignment < 0.98 || mecha.coreEnergy <= reserve;
                 input.WarpToggle = player.warpCommand && exit;
                 input.Boost = false;
+                // 翘曲期间 S 会降低原生 warpSpeedControl，不能沿用普通航速限速。
+                input.Thrust = 1;
                 if (exit || !player.warpCommand)
                 {
                     input.Direction = player.uRotation.Forward();
-                    input.Thrust = -1;
+                    input.Thrust = Target == null ? -1 : 1;
                 }
                 WarpStatus = !player.warpCommand || exit ? "exiting" : "cruising";
                 Phase = WarpStatus == "exiting" ? "exitingWarp" : "warping";
@@ -419,14 +435,25 @@ namespace AutomaticDSP.Tasks
             }
             if (tick < nextWarpTick) { WarpStatus = WarpUsed ? "recharging" : "native_rejected"; return; }
             if (local != null) { WarpStatus = "not_in_space"; return; }
-            // 原生曲速启动没有目标距离门槛；距离只用于判断是否已经到达与何时退出。
-            if (distance <= Tolerance)
-            { WarpStatus = "distance_too_short"; return; }
-            // 已退出曲速后，近程交给普通航行；远程须充分充能，避免每次刚够启动就耗一枚翘曲器。
-            if (WarpUsed && distance <= mecha.maxSailSpeed * 3.5 + (Target == null ? Tolerance : 1200))
-            { WarpStatus = "approaching"; return; }
-            if (WarpUsed && mecha.coreEnergy < mecha.coreEnergyCap * 0.9)
-            { WarpStatus = "recharging"; return; }
+            // 1 AU = 40000 米；导航从 0.5 AU 起允许启动，与退出距离分开以避免末段反复切换。
+            if (distance < 20000 || distance <= Tolerance)
+            { WarpStatus = WarpUsed ? "approaching" : "distance_too_short"; return; }
+            // 满曲速的退出范围可能超过 0.5 AU；启动前避开该范围，并覆盖原生重启冷却的一秒航程。
+            var attainableWarpSpeed = mecha.maxWarpSpeed *
+                (Math.Pow(1001, player.controller.actionSail.targetAtten) - 1) / 1000;
+            var startClearance = Math.Max(Tolerance,
+                attainableWarpSpeed * 0.0449 + 5000 + mecha.maxSailSpeed * 0.25);
+            if (distance <= startClearance + mecha.maxSailSpeed)
+            { WarpStatus = WarpUsed ? "approaching" : "distance_too_short"; return; }
+            // 近程交给普通航行；恢复曲速按剩余航程蓄能，长程仍分段，避免刚够启动就消耗翘曲器。
+            if (WarpUsed && mecha.coreEnergy < Math.Min(mecha.coreEnergyCap * 0.9,
+                EstimateWarpEnergy(mecha, distance, Target != null) * 1.1 + reserve))
+            {
+                // 远程等待曲速时先恢复储能，避免将反应堆输出消耗在收益很小的普通加速上。
+                input.Boost = false;
+                WarpStatus = "recharging";
+                return;
+            }
             if (mecha.thrusterLevel < 3) { WarpStatus = "tech_locked"; return; }
             if (mecha.coreEnergy <= mecha.warpStartPowerPerSpeed * mecha.maxWarpSpeed)
             { WarpStatus = "insufficient_energy"; return; }
@@ -439,6 +466,31 @@ namespace AutomaticDSP.Tasks
             nextWarpTick = tick + 60;
             WarpStatus = "starting";
             Phase = "startingWarp";
+        }
+
+        internal static double EstimateWarpEnergy(Mecha mecha, double distance, bool targetPlanet)
+        {
+            // 原生启动耗能按 (1-state)^3、维持耗能按 state 积分；不抵扣尚未产生的反应堆充电。
+            var rampSeconds = 1 / (0.0055655558 * 60);
+            var energy = mecha.maxWarpSpeed * (mecha.warpStartPowerPerSpeed * (rampSeconds / 4 + 1.0 / 60) +
+                mecha.warpKeepingPowerPerSpeed * (rampSeconds / 2 + 1.0 / 60));
+            // 按原生衰减曲线估算目标附近航段，而非将整段视为最低曲速。
+            // 近端采样给耗能留余量，平方分段加密行星附近；绕行和其他天体仍可能要求再次充能。
+            var nearDistance = targetPlanet ? Math.Min(distance, 2480000) : 0;
+            var equivalentDistance = Math.Max(0, distance - nearDistance);
+            var previous = 0.0;
+            for (var i = 1; i <= 64 && nearDistance > 0; i++)
+            {
+                var next = nearDistance * i * i / (64.0 * 64);
+                var planetAttenuation = 0.68 * Math.Pow(Math.Max(0, Math.Min(1, 1 - (previous - 3000) / 160000)), 2.5);
+                var starAttenuation = 0.36 * Math.Pow(Math.Max(0, Math.Min(1, 1 - (previous - 80000) / 2400000)), 2);
+                var attenuation = 1 - Math.Max(planetAttenuation, starAttenuation);
+                equivalentDistance += (next - previous) * attenuation * 1000 / (Math.Pow(1001, attenuation) - 1);
+                previous = next;
+            }
+            energy += mecha.warpKeepingPowerPerSpeed * equivalentDistance;
+            return Math.Max(mecha.warpStartPowerPerSpeed * mecha.maxWarpSpeed,
+                energy * mecha.reactorPowerConsRatio);
         }
 
         private static void AvoidBody(VectorLF3 position, VectorLF3 center, double clearance, ref VectorLF3 direction)
