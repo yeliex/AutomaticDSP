@@ -21,7 +21,7 @@ Mod 提供游戏原生观测和操作，Agent 负责选址、产能计算、布�
 
 ## 执行与收尾
 
-科研、手搓、机甲指令、建造按独立通道推进。预建下达后可继续移动，建造任务仍等实体落成才成功；跨通道依赖用 `dependsOn` 或状态条件，实体引用自动等待落成，数组顺序不保证跨通道完成顺序。
+科研、手搓、机甲指令、建造按独立通道推进。预建下达后可继续移动，建造任务在预建下达后即成功，施工进度另查 construction；跨通道依赖用 `dependsOn` 或状态条件，实体引用自动等待落成，数组顺序不保证跨通道完成顺序。
 
 继续下一组操作前，理解并用 `dismissNotice` 确认普通通知，核对 `acknowledged:true`、`visible:false`；自行收起不等于确认。错误、存档和其他决策对话框需单独处理，详见 [提示查询](references/interface/game-state.md#提示与地形查询)。
 
@@ -46,6 +46,6 @@ Mod 提供游戏原生观测和操作，Agent 负责选址、产能计算、布�
 | 产线整体布局、紧凑共线、立体输送与分层供料、仓储、供电及运行诊断 | [产线建设与运行](references/guides/production.md) |
 | 大规模选址、球面空间、分批投产、一物一塔、邻塔布线与重氢分馏循环（可选参考） | [大规模产线布局](references/guides/large-scale-layout.md) |
 | 产能配比、机器取整、增产剂与计算脚本 | [产线需求计算](references/guides/production-calculation.md) |
-| 戴森球、光子与蓝图建设 | [戴森球](references/guides/dyson-sphere.md) |
+| 戴森球、光子、工厂蓝图多模块拼接与升级、蓝图地基和矿物开关 | [戴森球与蓝图](references/guides/dyson-sphere.md) |
 
 遵守游戏的科技、材料、距离、碰撞、地形、端口与无人机建造规则。玩法按当前游戏数据和用户目标取舍，接口契约及限制集中在 `references/interface/`。日常执行按需读取本地参考；遇到资料缺失或版本差异时再补充查证。

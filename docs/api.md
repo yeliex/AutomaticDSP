@@ -487,6 +487,8 @@ query ObserveStorage {
 
 加载存档。调用状态为 `menu`。
 
+与原生载入界面默认值一致，沙盒存档会启用沙盒工具，普通存档不会启用。载入后等待 `/game` 就绪再下达命令。
+
 请求体：
 
 ```json
@@ -520,7 +522,7 @@ query ObserveStorage {
 
 ## POST /tasks
 
-默认按科研、手搓、机甲指令、建造四类通道分流。移动等机甲指令互斥；预建下达后后台等待落成，允许继续移动。垃圾操作即时执行。跨通道完成依赖用 `dependsOn` 表达，实体引用自动等待来源落成。任务接口不使用 GraphQL 写操作。
+默认按科研、手搓、机甲指令、建造四类通道分流。移动等机甲指令互斥；预建下达后即完成建造任务，允许继续移动，施工进度单独查询。垃圾操作即时执行。跨通道完成依赖用 `dependsOn` 表达，实体引用自动等待来源落成。任务接口不使用 GraphQL 写操作。
 
 任务状态随游戏主循环推进。自动分流无需 `immediate:true`；该字段保留即时白名单校验，也支持垃圾操作。完整通道、依赖、取消与超时语义见 [游戏控制契约](../skills/automatic-dsp/references/interface/game-control.md)。
 
@@ -629,11 +631,12 @@ query ObserveStorage {
 - `dismissNotice`：按 `noticeId` 确认信息提示，并关闭仍可见的对应窗口。
 - `researchTech`
 - `buyoutTech`
+- `sandboxUnlockTechs`
 - `removeTechInQueue`
 - `placeBuilding`
 - `placeBelt`
 - `placeSorter`
-- `applyFactoryBlueprint`：原生工厂蓝图空地粘贴，等待全部建筑实际落成。
+- `applyFactoryBlueprint`：原生工厂蓝图粘贴，支持覆盖、缺料预建和显式部分粘贴，预建下达后即完成任务。
 - `createDysonOrbit` / `editDysonOrbit` / `setDysonOrbitEnabled` / `removeDysonOrbit`
 - `createDysonLayer` / `editDysonLayer` / `removeDysonLayer`
 - `createDysonNode` / `removeDysonNode` / `createDysonFrame` / `removeDysonFrame` / `createDysonShell` / `removeDysonShell`
@@ -645,7 +648,7 @@ query ObserveStorage {
 - `setLabResearchMode`
 - `waitUntil`
 
-建造命令默认等待游戏内建造完成后才算成功。采集、填充、拆除和建造类命令没有移动策略参数：目标在内部允许的命令下发半径内时，命令可以自动靠近并再次调用游戏原生校验；目标超过下发半径时返回 `out_of_range`，外部 Agent 必须先用 `moveTo` 靠近，再重新下发交互或建造命令。
+建造命令在原生预建下达后即成功，施工由游戏异步推进；显式实体引用按需等待对应对象落成。采集、填充、拆除和建造类命令没有移动策略参数：目标在内部允许的命令下发半径内时，命令可以自动靠近并再次调用游戏原生校验；目标超过下发半径时返回 `out_of_range`，外部 Agent 必须先用 `moveTo` 靠近，再重新下发交互或建造命令。
 
 自动靠近不扩大游戏规则允许的交互、碰撞、地形、物品数量或科技限制；最终仍以游戏原生采集订单、`BuildTool.CheckBuildConditions()`、`PlanetFactory.EntityFastFillIn()` 和拆除逻辑为准。
 
@@ -787,6 +790,8 @@ query ObserveStorage {
 
 `buyoutTech` 成功结果中 `usesMetadata = true`，`metadataBuyoutCost` 会返回本次科技按当前 hash 进度估算的元数据物品需求和 `PropertySystem.GetItemAvaliableProperty()` 可用量。买断失败返回 `tech_buyout_failed`。
 
+`sandboxUnlockTechs` 无额外参数，只在沙盒存档且 `sandboxToolsEnabled` 为真时可用，否则返回 `sandbox_required`。它执行原生科技界面“一键解锁”的确认后动作，包括清空研究队列，保留原生对无限升级和特殊科技的排除项；不会解锁所有无限等级。结果返回 `action`、`blueprintLimit`、`bpReformLimit`。正常科研仍使用 `researchTech`。
+
 `removeTechInQueue` 用于对齐游戏原生 `GameHistoryData.RemoveTechInQueue(index)`，移除研究队列中的指定索引，并由游戏原生 `VerifyTechQueue()` 重新整理队列。它不负责决定科技路线；外部 Agent 应先查询 `research` / `techs`，移除不合适的队列项后，再用 `researchTech` 按游戏原生入队规则补满队列。
 
 ```json
@@ -872,7 +877,7 @@ query ObserveStorage {
 }
 ```
 
-`placeBelt` 成功结果包含 `entityIds`；只有单个实体的命令会额外返回 `entityId`。`setRecipe` 可通过 `target.commandId` 引用同一任务内之前成功命令返回的 `entityId`。
+所有建造命令成功结果包含 `planetId`、`submitted:true`、`objectIds`、`prebuildIds` 和下达时已有的 `entityIds`；单个对象额外返回 `prebuildId` 或 `entityId`。这些结果是下达快照，不随施工更新。`setRecipe` 等指令通过 `target.commandId` 和可选 `entityIndex` 按需解析源命令对应对象，预建未落成时等待，每秒最多检查一次；等待不占机甲通道。`entityIndex` 按源命令下达对象顺序索引，不能索引过滤后的 `entityIds`。
 
 `waitUntil` 支持以下第一版条件：
 
@@ -903,7 +908,7 @@ query ObserveStorage {
 
 ## 戴森云、戴森球与原生蓝图
 
-以下命令通过 `POST /tasks` 提交。设计与蓝图校验命令属于 `instruction` 通道；工厂蓝图属于 `construction`，预建下达后释放机甲通道，等待全部实体落成。恒星与布局由调用方决定，Mod 不选址、不规划结构、不生成生产线。
+以下命令通过 `POST /tasks` 提交。设计与蓝图校验命令属于 `instruction` 通道；工厂蓝图属于 `construction`，预建下达后即成功并释放机甲通道。恒星与布局由调用方决定，Mod 不选址、不规划结构、不生成生产线。
 
 ### 云轨道与球层
 
@@ -976,13 +981,23 @@ query ObserveStorage {
 | `validateBlueprint` | `blueprint`；戴森类型还须显式 `blueprintType`。不改设计，不代表落点有效 |
 | `exportDysonBlueprint` | `starId`、`blueprintType`；单层还需 `layerId`。结果 `blueprint` 为原生字符串 |
 | `applyDysonBlueprint` | `starId`、`blueprintType`、`blueprint`；单层还需已有 `layerId` |
-| `applyFactoryBlueprint` | `blueprint`、当前行星 `position:[x,y,z]`、`rotation`（0/90/180/270）；可选 `planetId` 限定当前行星 |
+| `applyFactoryBlueprint` | `blueprint`、当前行星 `position:[x,y,z]`、`rotation`（0/90/180/270）；可选 `planetId`、`anchorType`、`allowPartial`、`useReforms`、`usePalette`、`autoReform`、`buryVeins` |
 
 工厂只读校验调用原生完整解析，`validationScope:"nativeParse"`；戴森只读校验检查原生头、签名、类型、已解锁应力纬度与有界解压，`validationScope:"headerSignatureLatitudeAndCompression"`。两者均返回 `placementValidated:false`。戴森原生完整解析会直接修改目标，不能把它伪装成只读预览；通过只读检查仍可能在应用时失败。
 
 戴森应用保留原生粘贴前置限制：单层目标必须没有节点，整球／全部球层目标必须没有任何节点；拒绝 `target_not_empty`。云轨道导入保留原生替换规则，有帆旧轨道可能保留并停用。原生导入不是事务，结果明确 `atomic:false`、`stateMayHaveChanged:true`；失败时先查询现场与原任务，不应盲目重试。应用前另存基线，导入后核对实际层、朝向、节点和结构点。
 
-工厂应用复用原生蓝图区域检查、预览、碰撞／连接检查及预建下达。当前限定空地粘贴，不覆盖已有对象，不支持含地基数据的蓝图；分别返回 `unsupported_blueprint_overlap`、`unsupported_blueprint_reform`。全部建筑须在机甲建造范围内，蓝图规模、建筑、配方须已解锁，背包加手持须备齐建筑。缺料返回 `not_enough_items`，不会绕过科技、地形或碰撞。任务等待所有预建变为实际实体后才成功，返回 `entityIds`；超时、取消或原生部分下达失败不会自动撤销预建。大蓝图应由外部 Agent 按设计准备材料和分段方案，接口不自动切分或优化。
+工厂应用复用原生蓝图区域、科技容量、地形、碰撞／连接检查及预建下达。落点须在机甲建造范围内，蓝图其余建筑可超出当前施工半径；允许材料不足时创建 `itemRequired` 非零的预建，后续供料和施工仍由原生系统执行。不会扩大无人机范围、补发物品或自动移动。建筑重合时采用原生复用、参数粘贴和升级行为，不能覆盖原生拒绝的碰撞。
+
+`anchorType` 默认 0，单区域通常为 0–4，单行／单列仅允许 0/2/3，跨区域仅允许 0–2。跨区域仅允许 0/180 度，非居中的跨区域蓝图还须遵守原生半球朝向；不符时返回 `requiredRotation`。纬度锁、回归线和区域尺寸继续由原生检查裁决。
+
+`useReforms` 默认 true，应用蓝图自带地基；`usePalette` 默认 false，控制导入地基调色板；`autoReform` 默认 false，显式开启后允许原生建筑整平流程。地基使用原生科技、材料、沙土与地形执行逻辑。`buryVeins:true` 掩埋矿物，`false` 按原生占用限制还原矿物；省略时沿用当前原生地基工具设置，自动化调用建议显式指定。该参数仅影响实际执行的地基区域，不是整星矿物开关，也不同于 `reformTerrain` 的地形还原模式。地基完成后重新校验建筑；整个过程不具备事务回滚，建筑阶段失败可能已改变地形。
+
+`allowPartial` 默认 false，建筑校验失败则不下达建筑；true 对应原生部分粘贴，只下达原生允许的对象。返回 `buildingCount`、`placedCount`、`partial`、`skipped`（索引、物品、位置与原生条件）、`foundationDelta`、`sandDelta` 和 `planetId`。部分粘贴不代表整张蓝图完成；所有原生允许的预建下达后即成功，返回 `submitted:true`、有符号 `objectIds`（负数为预建、正数为已有实体）、正数 `prebuildIds` 和下达时已有的 `entityIds`。纯地基蓝图执行完地形操作即可完成。施工由游戏异步推进，使用 `construction` 和原行星 `prebuildPool` 单独查询；允许跨星取料后返回继续施工；超时、取消或原生部分下达失败均不会自动撤销预建。接口不自动切分、补料或优化蓝图。
+
+同一接口可将升级蓝图覆盖到预建或已建实体上，使用原生换型及参数粘贴。返回 `reusedCount`（复用对象数）和 `upgradedCount`（型号实际改变成功数，包含降级）。缺料预建可直接换型；已投入材料的对象需要目标型号物品，沙盒快速建造也不等于升级免材料。原生返回对象 ID 但型号未改变时，`skipped` 包含 `condition:"UpgradeNotApplied"`、`objectId`、目标 `itemId` 和 `actualItemId`，该对象不计入 `placedCount`。默认返回 `upgrade_failed`；`allowPartial:true` 且有成功对象时返回部分成功。升级失败前可能已经更新其他对象或配方，不保证事务回滚。不同蓝图的边框、锚点可能不同，对齐位置由外部调用方决定；接口不会寻找基础产线或自动对齐。
+
+戴森导入结果还返回 `overwritesGridCanvas`：目标即使没有节点，也可能已有网格画布；此字段反馈原生导入是否涉及覆盖该画布。
 
 ## 默认建造状态摘要
 
@@ -1043,7 +1058,7 @@ POST /tasks/task:42/cancel
           "id": "place-miner",
           "type": "placeBuilding",
           "status": "RUNNING",
-          "phase": "waitingBuilt",
+          "phase": "creatingPrebuild",
           "startedAt": "2026-06-13T12:00:00Z",
           "completedAt": null,
           "errorCode": null,
