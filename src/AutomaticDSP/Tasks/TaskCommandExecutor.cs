@@ -153,6 +153,9 @@ namespace AutomaticDSP.Tasks
                 case "buyouttech":
                     ExecuteBuyoutTechLocked(command, now);
                     return;
+                case "sandboxunlocktechs":
+                    ExecuteSandboxUnlockTechs(command, now);
+                    return;
                 case "removetechinqueue":
                     ExecuteRemoveTechInQueueLocked(command, now);
                     return;

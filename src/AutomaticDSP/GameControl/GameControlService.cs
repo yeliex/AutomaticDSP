@@ -161,9 +161,15 @@ namespace AutomaticDSP.GameControl
                 throw new GameControlException("save_not_found", "Save file does not exist.", status);
             }
 
+            GameSave.ReadHeaderAndDescAndProperty(normalized, false, out var header, out var desc, out var property);
             ScheduleGameStart(
                 request,
-                () => DSPGame.StartGame(normalized),
+                () =>
+                {
+                    DSPGame.StartGame(normalized);
+                    // 与原生载入界面的默认勾选一致，避免沙盒存档重载后丢失沙盒工具。
+                    DSPGame.WillEnableSandboxTools = desc != null && desc.isSandboxMode;
+                },
                 () => new JsonObject
                 {
                     ["started"] = true,
