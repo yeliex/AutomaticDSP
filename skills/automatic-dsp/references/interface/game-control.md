@@ -287,7 +287,7 @@ HTTP 层错误常用 `{"error":{"code":"...","message":"..."}}`；执行失败�
 | `warp` | 可选 durationTicks，默认 600 | 原生曲速按键入口后 warpCommand 和 warping 均为真 |
 | `exitWarp` | 可选 durationTicks，默认 600 | 原生退出后 warpCommand 和 warping 均为假 |
 
-`navigateTo.useWarp=true` 允许在航向、科技、能量和翘曲器满足原生条件且尚未到达时启动曲速，接近目标时按原生退出尾程提前退出；原生启动没有目标距离下限，不可用时继续普通航行。低能退出曲速后，远程航行在完全退出至少 60 游戏 tick 且核心恢复至容量 90% 后重新检查原生曲速条件；接近目标时改用普通航行，不反复启动。普通巡航在航向对准且保有制动能量时优先加速到当前航速上限，不固定扣留 30% 核心容量。结果 `useWarp` 表示请求选项，`warpUsed` / `warpStatus` 表示实际使用情况；直接 `warp` 命令不满足前置条件时会失败。
+`navigateTo.useWarp=true` 仅在剩余距离至少0.5 AU（20000米）且航向、科技、能量和翘曲器满足原生条件时启动曲速。退出距离参考运输船：当前实际曲速×0.0449 + 5000米 + 普通最高航速×0.25，且不小于到达容差。启动还须超出按当前天体衰减估算的满曲速退出距离，并额外留一秒普通航程；不记录历史末段范围，意外退出或越过目标后按当前距离、航向及能量重新判断；行星目标按距地表计算，太空目标按距目标点计算。不可用时继续普通航行。该距离门槛只适用于自动导航，直接 `warp` 命令仍按原生条件判断。低能退出曲速后，远程航行在完全退出至少 60 游戏 tick 且核心满足剩余航程估算电量后（计入启动、维持及近天体衰减，长程分段等待上限为容量 90%）重新检查原生曲速条件；接近目标时改用普通航行，不反复启动。固态星巡航对准后持续请求原生最大加速，并提前朝可见落点修正航向，高速进入地表后补齐近地航段；太空点及气态星保留主动制动余量。远程回充时暂停额外加速，优先恢复翘曲电量。结果 `useWarp` 表示请求选项，`warpUsed` / `warpStatus` 表示实际使用情况；直接 `warp` 命令不满足前置条件时会失败。
 
 原生 `PlayerMove_Sail.GameTick` 的曲速启动校验也没有普通航速下限：Sail 状态、控制器可用且机甲存活、推进器等级至少 3、本地行星为空、核心能量严格大于 `warpStartPowerPerSpeed * maxWarpSpeed`，以及原生消费／自动补充翘曲器成功。`VFInput._warpKey` 只读取按键，不检查速度。校验嵌在原生按键处理内，没有独立的 `CanWarp` 方法；Mod 预检对应条件后仍生成按键，让原生方法最终判定。导航的航向及速度方向对齐属于引导要求，不是原生速度门槛。
 
@@ -461,6 +461,8 @@ Agent 提供路径；`startPosition` / `endPosition` 使用原生线段吸附，
 
 还原地基进入手持物品，空手时会选中空的地基手持槽。手持非地基物品返回 `hand_item_conflict`，不会强行清空背包或丢弃物品。沙土不足返回 `insufficient_sand`，地基不足返回 `missing_item`。沙土收支可能不对称，以游戏原生计算为准；还原不是事务回滚。
 
+还原后即使手持地基数量为 0，游戏仍可能保留地表改造或建造模式，使后续导航显示 `manualOverride/build_command`。先核对手持物品和游戏界面，不能直接归因为用户正在施工；通过 Computer Use 收起当前工具并退出建造模式后，再查询原导航任务是否恢复。仅在原任务已终止时提交新导航。
+
 结果含吸附后的 `position`、`foundationDelta`、`sandDelta`（正数增加，负数消耗）、`heightBefore/heightAfter`、`changedCells {index,before,after}` 及 `nativeAreaMode`（0 普通、1 禁改区域裁剪、2 基地坑扩展）。网格字节高 3 位是改造类型，低 5 位是颜色。重复操作或受保护区域可能没有变化；不能用 `SUCCEEDED` 代替实际范围验证。掩埋、露矿仍遵循原生遮挡规则。后续建造显式依赖改造命令。
 
 植被收取进入 `player.vegetableCollection.playerVegeDict`，不产出手挖材料；种植调用原生碰撞校验，并从收藏扣除一个对应原型。不会移植矿脉、飞行仓或特效对象。普通模式缺少收藏返回 `missing_vegetation`；沙盒仅遵循游戏已启用的原生沙盒规则，不由命令开启。成功结果含现场 `vegeId`、`protoId`、实际 `position`、`collectionCount` 和 `collectionDelta`；种植还返回 `nativeCondition`。碰撞失败返回 `collision` 和原生条件。收取后原对象 ID 不再有效，种植返回新对象 ID，可能复用原空槽。
@@ -535,6 +537,8 @@ Agent 提供路径；`startPosition` / `endPosition` 使用原生线段吸附，
 | droneAutoReplenish / shipAutoReplenish | boolean；调用原生 StationAutoReplenishIfNeeded，从机甲普通背包实际扣除 5001/5002，补至工具容量。结果 consumedCount、inventoryCount、vehicleCount 反映实际结果；空背包可以成功开启但补充数为零 |
 | remoteGroupMask | 非负整数位掩码，第 n 位对应原生第 n 个分组按钮；拒绝超出原生按钮数量的位 |
 | routePriority | 原生枚举字符串 Ignore / Prioritize / Only / Designated |
+
+`deliveryShips` 是整座塔共用的最低装载比例，不能按货槽设置；不是固定每船运输数量。调整前核对所有货槽的需求上限及当前船载量，避免100%起运使需求100的燃料、翘曲器或建筑无法凑满一船。混合物料塔优先按用户要求保留低起运比例，靠实际到货统计判断是否需要增船、扩容或增加专用大宗进口塔。
 
 船、曲速、采集器、远程分组和优先级仅适用于星际站。上述接口不修改船速、载量、能源或科技。自动补充不接收目标数量，货槽中的 5001/5002 不计为运力。1210 货槽到货由原生运输 tick 自动补专用翘曲器仓。
 

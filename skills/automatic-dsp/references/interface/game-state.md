@@ -98,6 +98,8 @@ HTTP 200 返回 `data`，结构对应请求的字段或别名；同时固定附�
 受限矿脉组、气体和远端工厂入口在通用字段读取、列表过滤及无子字段展开时同样受限；旧 galaxy 摘要中不可见的矿脉字段返回 null。行星与恒星对象的生成种子不通过通用查询提供，不得根据其他游戏描述中的种子重建未知资源。
 
 
+原始 `factory.veinPool.type` 序列化为枚举名称，例如 `"Iron"`；它与资源摘要的数字 `typeId: 1` 不同。筛选铁矿可用 `where: { id_gt: 0, productId: 1001, amount_gt: 0 }`，空结果先核对字段类型与资源摘要。大型采矿机可直接将产物送进自身站点货槽，不能仅凭 `minerPool.productId: 0` 判断停产；同时查询有效矿脉、站点 `storage` 和实际产消。
+
 ### 植被目录与收藏
 
 `veges` 返回原生 `LDB.veges` 原型目录，字段遵循原生大小写（`ID`、`Type` 等），可用别名统一输出；`player.vegetableCollection` 和 `factory.vegePool` 分别对应玩家收藏与现场对象。收藏字典条目的 `key` 是原型 ID，`value` 是数量，不能与现场 `vegeId` 混用。飞行仓及特效等特殊原型不属于可移植对象。
