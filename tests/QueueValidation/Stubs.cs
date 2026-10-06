@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using AutomaticDSP.Tasks;
 namespace UnityEngine { public struct Vector3 {} }
 public class ForgeTask {}
+public class OrderNode {}
 public class BuildPreview { public void Clone(BuildPreview other) {} }
 public enum EObjectType { None }
 public static class GameMain { public static long gameTick; }

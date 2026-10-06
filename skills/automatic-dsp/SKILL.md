@@ -23,6 +23,8 @@ Mod 提供游戏原生观测和操作，Agent 负责选址、产能计算、布�
 
 科研、手搓、机甲指令、建造按独立通道推进。预建下达后可继续移动，建造任务在预建下达后即成功，施工进度另查 construction；跨通道依赖用 `dependsOn` 或状态条件，实体引用自动等待落成，数组顺序不保证跨通道完成顺序。
 
+行星上远距离移动使用 `navigateTo` 指定当前星球和局部落点，通过原生飞行抵达；`moveTo` 用于短距离接近。移动前核对飞行科技与能源，具体选择见 [移动与人工采集](references/guides/mecha.md#移动与人工采集)。
+
 继续下一组操作前，理解并用 `dismissNotice` 确认普通通知，核对 `acknowledged:true`、`visible:false`；自行收起不等于确认。错误、存档和其他决策对话框需单独处理，详见 [提示查询](references/interface/game-state.md#提示与地形查询)。
 
 丢弃、拆除或满包溢出后，执行 [背包与垃圾收尾](references/guides/mecha.md#能源与背包)，确认物品去向及剩余垃圾。

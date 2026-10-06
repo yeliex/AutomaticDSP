@@ -42,12 +42,14 @@ public static class GameMain
 }
 public class Player
 {
+    public OrderNode currentOrder;
     public VectorLF3 uPosition;
     public UnityEngine.Vector3 position; public Mecha mecha=new(); public PlayerController controller = new();
     public bool isAlive=true;public int inhandItemId;public Package package=new();public void ThrowTrash(int id,int count,int inc,int n){} public int Cleared;
     public void ClearOrders() { Cleared++; }
 }
 public enum ECommand { None, Move, Build }
+public class OrderNode { }
 public class Command { public ECommand type; public void SetNoneCommand() { type = ECommand.None; } }
 public class BuildAction { public int Dismantled; public bool Succeeds=true; public bool DoDismantleObject(int id){Dismantled=id;return Succeeds;} public int Closed; public void Close() { Closed++; } }
 public class PlayerController { public ActionPick actionPick=new(); public Command cmd = new(); public BuildAction actionBuild = new(); }
@@ -56,6 +58,7 @@ namespace AutomaticDSP.Tasks
     internal class FlightInput { public bool Disposed; public void Dispose() { Disposed = true; } }
     internal class CommandState
     {
+        public OrderNode NativeMoveOrder;
         public bool EnteredBuildMode, OwnsPlayerOrders;
         public int ItemId;public int TargetId; public string NormalizedType;
         public FlightInput Flight;

@@ -21,6 +21,10 @@ namespace AutomaticDSP.Tasks
             switch (command.NormalizedType)
             {
                 case "moveto":
+                    if (command.NativeMoveOrder != null &&
+                        ReferenceEquals(GameMain.mainPlayer?.currentOrder, command.NativeMoveOrder))
+                        GameMain.mainPlayer.ClearOrders();
+                    return;
                 case "minetarget":
                 case "entityfastfillin":
                 case "entityfasttakeout":

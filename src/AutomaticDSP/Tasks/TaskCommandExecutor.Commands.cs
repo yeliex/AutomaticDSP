@@ -67,59 +67,6 @@ namespace AutomaticDSP.Tasks
                 new JsonObject { ["conditionMet"] = true });
         }
 
-        private void ExecuteMoveToLocked(CommandState command, DateTimeOffset now)
-        {
-            if (!TryGetPlayer(out var player, out var errorCode, out var errorMessage))
-            {
-                finishCommand(command, CommandFailed, errorCode, errorMessage, now, null);
-                return;
-            }
-
-            if (!TryValidateCurrentPlanet(command, player, out errorCode, out errorMessage))
-            {
-                finishCommand(command, CommandFailed, errorCode, errorMessage, now, null);
-                return;
-            }
-
-            if (!TryGetVector(command, "position", out var target, out errorMessage))
-            {
-                finishCommand(command, CommandFailed, "invalid_command", errorMessage, now, null);
-                return;
-            }
-
-            var tolerance = Math.Max(0.1, GetDouble(command, "tolerance", 2.0));
-            command.Phase = "approaching";
-            if (!command.ActionIssued)
-            {
-                player.Order(OrderNode.MoveTo(target), false);
-                command.ActionIssued = true;
-            }
-
-            var distance = Vector3.Distance(player.position, target);
-            if (distance > tolerance)
-            {
-                command.Result = new JsonObject
-                {
-                    ["distance"] = distance,
-                    ["target"] = Vector(target)
-                };
-                return;
-            }
-
-            player.ClearOrders();
-            finishCommand(
-                command,
-                CommandSucceeded,
-                null,
-                null,
-                now,
-                new JsonObject
-                {
-                    ["distance"] = distance,
-                    ["target"] = Vector(target)
-                });
-        }
-
         private void ExecuteMineTargetLocked(CommandState command, DateTimeOffset now)
         {
             if (!TryGetPlayer(out var player, out var errorCode, out var errorMessage))

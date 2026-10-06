@@ -648,6 +648,8 @@ query ObserveStorage {
 - `setLabResearchMode`
 - `waitUntil`
 
+`moveTo` 在人工输入或其他原生订单期间进入 `manualOverride`，结果的 `overrideReason` 标明原因；输入释放、订单结束后恢复原目标，永久停止需取消任务。只撤销本任务持有的移动订单，保留人工订单。连续 600 游戏 tick（10 秒）未向目标推进至少 0.5 米时返回 `movement_stuck`，暂停和人工接管不计入停滞；移动期间切换行星返回 `planet_changed`。`timeoutSeconds` 可限制总等待时间。行星上远距离移动应使用 `navigateTo` 的原生飞行。
+
 建造命令在原生预建下达后即成功，施工由游戏异步推进；显式实体引用按需等待对应对象落成。采集、填充、拆除和建造类命令没有移动策略参数：目标在内部允许的命令下发半径内时，命令可以自动靠近并再次调用游戏原生校验；目标超过下发半径时返回 `out_of_range`，外部 Agent 必须先用 `moveTo` 靠近，再重新下发交互或建造命令。
 
 自动靠近不扩大游戏规则允许的交互、碰撞、地形、物品数量或科技限制；最终仍以游戏原生采集订单、`BuildTool.CheckBuildConditions()`、`PlanetFactory.EntityFastFillIn()` 和拆除逻辑为准。

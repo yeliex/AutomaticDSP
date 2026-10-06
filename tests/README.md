@@ -7,6 +7,7 @@
 ```powershell
 dotnet run --project tests/CapabilityValidation/CapabilityValidation.csproj -v quiet
 dotnet run --project tests/QueueValidation/QueueValidation.csproj -v quiet
+dotnet run --project tests/MovementValidation/MovementValidation.csproj -v quiet -p:NoWarn=0649
 dotnet run --project tests/QueryValidation/QueryValidation.csproj -v quiet
 dotnet run --project tests/StateSummaryValidation/StateSummaryValidation.csproj -v quiet -p:NoWarn=0649
 dotnet run --project tests/ProductionSettingsValidation/ProductionSettingsValidation.csproj -v quiet

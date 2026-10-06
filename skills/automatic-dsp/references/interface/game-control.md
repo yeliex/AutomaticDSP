@@ -223,6 +223,8 @@ HTTP 层错误常用 `{"error":{"code":"...","message":"..."}}`；执行失败�
 
 `moveTo` 使用当前行星的 `position` 坐标系。采集、建造及实体取放在允许的下发半径内可以自动靠近，超出则返回 `out_of_range`，需先单独移动。最终操作经过原生校验。
 
+`moveTo` 和导航一样，在人工输入或其他原生订单期间进入 `manualOverride`，通过结果 `overrideReason` 说明接管原因；操作结束后恢复原目标，永久停止需取消任务。仅清理本任务持有的移动订单，不覆盖人工订单。连续 600 游戏 tick（10 秒）未向目标推进至少 0.5 米时返回 `movement_stuck`；游戏暂停和人工接管不计入停滞，当前行星改变返回 `planet_changed`。可用 `timeoutSeconds` 限制包含人工接管在内的总等待时间。远距离应改用当前星球的 `navigateTo`。
+
 机甲补燃料操作机甲燃烧室；建筑补料使用 `entityFastFillIn`。没有燃料转移且燃烧室仍为空时返回 `no_fuel_moved`。
 
 ```json

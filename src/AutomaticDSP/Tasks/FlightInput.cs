@@ -79,15 +79,7 @@ namespace AutomaticDSP.Tasks
             else if (GameMain.mainPlayer != Player) Error = "session_changed";
             else if (!Player.isAlive || controller.gameData.disableController) Error = "controller_unavailable";
             if (Error != null) return false;
-            var uiOpen = VFInput.inFullscreenGUI || VFInput.inputing || VFInput.inScreenshotMode || UIGame.viewMode >= EViewMode.Globe;
-            // 界面按键不代表移动接管；导航仍逐 tick 驱动原生动作，显式订单始终优先。
-            OverrideReason = Navigation == null && uiOpen ? "ui_open" :
-                controller.cmd.type == ECommand.Build ? "build_command" :
-                Player.navigation.navigating ? "native_navigation" :
-                Player.currentOrder != null && !Player.currentOrder.targetReached ? "player_order" :
-                uiOpen ? null : controller.input0.sqrMagnitude > 0 || controller.input1.sqrMagnitude > 0 ? "movement_input" :
-                VFInput._warpKey ? "warp_key" : VFInput._sailSpeedUp ? "speed_up_key" :
-                VFInput.rtsStop.onDown ? "stop_key" : Navigation != null && VFInput._sailLockCursor ? "cursor_lock_key" : null;
+            OverrideReason = MovementControl.OverrideReason(Player, Navigation != null);
             if (OverrideReason != null)
             {
                 if (Navigation != null)

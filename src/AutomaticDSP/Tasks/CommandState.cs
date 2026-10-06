@@ -54,6 +54,14 @@ namespace AutomaticDSP.Tasks
 
         public bool ActionIssued { get; set; }
 
+        public OrderNode NativeMoveOrder { get; set; }
+
+        public int MovePlanetId { get; set; }
+
+        public long MoveProgressTick { get; set; }
+
+        public double MoveProgressDistance { get; set; }
+
         public FlightInput Flight { get; set; }
 
         public int TargetId { get; set; }
