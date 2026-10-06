@@ -8,143 +8,77 @@ namespace AutomaticDSP.Tasks
 {
     internal sealed partial class TaskCommandExecutor
     {
-        private void WaitForBuiltObjectLocked(CommandState command, DateTimeOffset now)
+        private void CompleteBuildSubmission(CommandState command, DateTimeOffset now)
         {
-            command.Phase = "waitingBuilt";
-            var factory = GameMain.localPlanet?.factory;
-            if (factory == null)
-            {
-                finishCommand(command, CommandFailed, "game_not_ready", "Current planet factory is not loaded.", now, null);
-                return;
-            }
-
-            var objId = command.BuildPreview?.objId ?? command.BuildObjectId;
-            if (objId > 0 &&
-                factory.entityPool != null &&
-                objId < factory.entityPool.Length &&
-                factory.entityPool[objId].id == objId)
-            {
-                finishCommand(
-                    command,
-                    CommandSucceeded,
-                    null,
-                    null,
-                    now,
-                    new JsonObject
-                    {
-                        ["entityId"] = objId,
-                        ["itemId"] = command.BuildItemId
-                    });
-                return;
-            }
-
-            if (objId < 0)
-            {
-                var prebuildId = -objId;
-                if (factory.prebuildPool != null &&
-                    prebuildId < factory.prebuildPool.Length &&
-                    factory.prebuildPool[prebuildId].id == prebuildId &&
-                    !factory.prebuildPool[prebuildId].isDestroyed)
+            if (command.BuildPlanetId == 0) command.BuildPlanetId = GameMain.localPlanet.id;
+            if (command.BuildTargets == null)
+                command.BuildTargets = new List<BuildWaitTarget>
                 {
-                    return;
-                }
-            }
-
-            if (TryFindBuiltEntity(factory, command.BuildItemId, command.BuildPosition, out var entityId))
-            {
-                finishCommand(
-                    command,
-                    CommandSucceeded,
-                    null,
-                    null,
-                    now,
-                    new JsonObject
-                    {
-                        ["entityId"] = entityId,
-                        ["itemId"] = command.BuildItemId
-                    });
-                return;
-            }
-
-            finishCommand(command, CommandFailed, "build_failed", "Prebuild disappeared before a matching entity was found.", now, null);
-        }
-
-        private void WaitForBuiltObjectsLocked(CommandState command, DateTimeOffset now)
-        {
-            command.Phase = "waitingBuilt";
-            var factory = GameMain.localPlanet?.factory;
-            if (factory == null)
-            {
-                finishCommand(command, CommandFailed, "game_not_ready", "Current planet factory is not loaded.", now, null);
-                return;
-            }
-
-            if (command.BuildTargets == null || command.BuildTargets.Count == 0)
-            {
-                finishCommand(command, CommandFailed, "build_failed", "Command has no build targets to wait for.", now, null);
-                return;
-            }
-
+                    new BuildWaitTarget(command.BuildObjectId, command.BuildItemId, command.BuildPosition, command.BuildPreview)
+                };
+            var objectIds = new List<int>();
+            var prebuildIds = new List<int>();
             var entityIds = new List<int>();
             foreach (var target in command.BuildTargets)
             {
-                var objId = target.Preview?.objId ?? target.ObjectId;
-                if (objId > 0 &&
-                    factory.entityPool != null &&
-                    objId < factory.entityPool.Length &&
-                    factory.entityPool[objId].id == objId)
-                {
-                    target.EntityId = objId;
-                    entityIds.Add(objId);
-                    continue;
-                }
-
-                if (target.EntityId > 0 &&
-                    factory.entityPool != null &&
-                    target.EntityId < factory.entityPool.Length &&
-                    factory.entityPool[target.EntityId].id == target.EntityId)
-                {
-                    entityIds.Add(target.EntityId);
-                    continue;
-                }
-
-                if (objId < 0)
-                {
-                    var prebuildId = -objId;
-                    if (factory.prebuildPool != null &&
-                        prebuildId < factory.prebuildPool.Length &&
-                        factory.prebuildPool[prebuildId].id == prebuildId &&
-                        !factory.prebuildPool[prebuildId].isDestroyed)
-                    {
-                        return;
-                    }
-                }
-
-                if (TryFindBuiltEntity(factory, target.ItemId, target.Position, out var entityId, target.Preview))
-                {
-                    target.EntityId = entityId;
-                    entityIds.Add(entityId);
-                    continue;
-                }
-
-                finishCommand(command, CommandFailed, "build_failed", "Prebuild disappeared before a matching entity was found.", now, null);
-                return;
+                objectIds.Add(target.ObjectId);
+                if (target.ObjectId < 0) prebuildIds.Add(-target.ObjectId);
+                else entityIds.Add(target.ObjectId);
             }
-
-            var result = new JsonObject
+            var result = command.Result as JsonObject ?? new JsonObject { ["itemId"] = command.BuildItemId };
+            result["planetId"] = command.BuildPlanetId;
+            result["objectIds"] = objectIds;
+            result["prebuildIds"] = prebuildIds;
+            result["entityIds"] = entityIds;
+            result["submitted"] = true;
+            if (objectIds.Count == 1)
             {
-                ["itemId"] = command.BuildItemId,
-                ["entityIds"] = entityIds
-            };
-            if (entityIds.Count == 1)
-            {
-                result["entityId"] = entityIds[0];
+                if (objectIds[0] < 0) result["prebuildId"] = -objectIds[0];
+                else result["entityId"] = objectIds[0];
             }
-
             finishCommand(command, CommandSucceeded, null, null, now, result);
         }
 
-        private static bool TryFindBuiltEntity(PlanetFactory factory, int itemId, Vector3 position, out int entityId, BuildPreview preview = null)
+        private static bool TryResolveBuildTarget(CommandState source, int index, out int entityId, out bool pending)
+        {
+            entityId = 0;
+            pending = false;
+            if (source.BuildTargets == null || index < 0 || index >= source.BuildTargets.Count) return false;
+            var factory = GameMain.galaxy?.PlanetById(source.BuildPlanetId)?.factory;
+            if (factory == null) { pending = true; return false; }
+            var target = source.BuildTargets[index];
+            var id = target.EntityId > 0 ? target.EntityId : target.ObjectId;
+            if (id > 0 && id < factory.entityPool.Length && factory.entityPool[id].id == id &&
+                factory.entityPool[id].protoId == target.ItemId &&
+                (factory.entityPool[id].pos - target.Position).sqrMagnitude < 0.01f)
+            {
+                entityId = id;
+                return true;
+            }
+            if (id < 0 && -id < factory.prebuildPool.Length && factory.prebuildPool[-id].id == -id &&
+                !factory.prebuildPool[-id].isDestroyed)
+            {
+                pending = true;
+                return false;
+            }
+            if (target.Preview?.desc?.isInserter == true)
+            {
+                // 只解析被后续指令引用的分拣器及其两端，不逐帧遍历整张蓝图。
+                foreach (var endpoint in new[] { target.Preview.input, target.Preview.output })
+                {
+                    if (endpoint == null) continue;
+                    var endpointIndex = source.BuildTargets.FindIndex(t => ReferenceEquals(t.Preview, endpoint));
+                    if (endpointIndex < 0) continue;
+                    if (!TryResolveBuildTarget(source, endpointIndex, out var endpointId, out pending)) return false;
+                    if (ReferenceEquals(endpoint, target.Preview.input)) target.Preview.inputObjId = endpointId;
+                    if (ReferenceEquals(endpoint, target.Preview.output)) target.Preview.outputObjId = endpointId;
+                }
+            }
+            if (!TryFindBuiltEntity(factory, target.ItemId, target.Position, out entityId, target.Preview, 0.1f)) return false;
+            target.EntityId = entityId;
+            return true;
+        }
+        private static bool TryFindBuiltEntity(PlanetFactory factory, int itemId, Vector3 position, out int entityId, BuildPreview preview = null, float maxDistance = 1.5f)
         {
             entityId = 0;
             if (factory.entityPool == null)
@@ -152,7 +86,7 @@ namespace AutomaticDSP.Tasks
                 return false;
             }
 
-            var bestDistance = 1.5f * 1.5f;
+            var bestDistance = maxDistance * maxDistance;
             for (var i = 1; i < factory.entityCursor && i < factory.entityPool.Length; i++)
             {
                 var entity = factory.entityPool[i];

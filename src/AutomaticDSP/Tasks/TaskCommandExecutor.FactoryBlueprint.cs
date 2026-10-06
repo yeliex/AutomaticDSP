@@ -12,25 +12,6 @@ namespace AutomaticDSP.Tasks
     {
         private void ExecuteFactoryBlueprint(CommandState command, DateTimeOffset now)
         {
-            if (command.BuildTargets != null)
-            {
-                var waitingFactory = GameMain.localPlanet?.factory;
-                if (waitingFactory != null)
-                {
-                    // 分拣器等待两端预建落成后，使用实际实体 ID 核对连接。
-                    foreach (var target in command.BuildTargets.Where(t => !t.Preview.desc.isInserter && t.EntityId == 0))
-                        if (TryFindBuiltEntity(waitingFactory, target.ItemId, target.Position, out var id, target.Preview)) target.EntityId = id;
-                    foreach (var target in command.BuildTargets.Where(t => t.Preview.desc.isInserter))
-                    {
-                        var input = command.BuildTargets.Find(t => t.Preview == target.Preview.input);
-                        var output = command.BuildTargets.Find(t => t.Preview == target.Preview.output);
-                        if (input?.EntityId > 0) target.Preview.inputObjId = input.EntityId;
-                        if (output?.EntityId > 0) target.Preview.outputObjId = output.EntityId;
-                    }
-                }
-                WaitForBuiltObjectsLocked(command, now);
-                return;
-            }
             if (!TryGetPlayer(out var player, out var errorCode, out var errorMessage) ||
                 !TryValidateCurrentPlanet(command, player, out errorCode, out errorMessage))
             {
@@ -47,6 +28,20 @@ namespace AutomaticDSP.Tasks
                 return;
             }
             var code = codeToken.Value<string>().Trim();
+            foreach (var name in new[] { "allowPartial", "useReforms", "usePalette", "autoReform", "buryVeins" })
+                if (TryGetToken(command, name, out var option) && option.Type != JTokenType.Boolean)
+                {
+                    finishCommand(command, CommandFailed, "invalid_command", name + " 必须为布尔值。", now, null);
+                    return;
+                }
+            if (TryGetToken(command, "anchorType", out var anchorToken) &&
+                (anchorToken.Type != JTokenType.Integer || anchorToken.Value<double>() < 0 || anchorToken.Value<double>() > 4))
+            {
+                finishCommand(command, CommandFailed, "invalid_command", "anchorType 必须是 0–4 的整数。", now, null);
+                return;
+            }
+            var anchor = GetInt(command, "anchorType", 0);
+            var allowPartial = GetBool(command, "allowPartial", false);
             if (!code.StartsWith("BLUEPRINT:", StringComparison.Ordinal) || !CheckBlueprintCompression(code, out errorMessage))
             {
                 finishCommand(command, CommandFailed, "invalid_blueprint", "需要有效的原生工厂蓝图压缩数据。", now, null);
@@ -54,16 +49,17 @@ namespace AutomaticDSP.Tasks
             }
             var blueprint = new BlueprintData();
             var parse = blueprint.FromBase64String(code);
-            if (parse != BlueprintDataIOError.OK || !blueprint.isValid || blueprint.buildings == null || blueprint.buildings.Length == 0)
+            if (parse != BlueprintDataIOError.OK || !blueprint.isValid || BlueprintData.IsNullOrEmpty(blueprint))
             {
-                finishCommand(command, CommandFailed, "invalid_blueprint", "原生工厂蓝图解析失败或没有建筑。", now,
+                finishCommand(command, CommandFailed, "invalid_blueprint", "原生工厂蓝图解析失败或没有可粘贴的建筑与地基。", now,
                     new JsonObject { ["nativeCondition"] = parse.ToString() });
                 return;
             }
-            // 初版只应用建筑布局，不静默丢弃蓝图中的地基数据。
-            if (blueprint.reformData != null && blueprint.reformData.reformCount > 0)
+            if (blueprint.areas == null || blueprint.areas.Length == 0 ||
+                (blueprint.areas.Length > 1 && (anchor > 2 || rotation % 180f != 0f)) ||
+                (blueprint.areas.Length == 1 && (blueprint.areas[0].width == 1 || blueprint.areas[0].height == 1) && anchor != 0 && anchor != 2 && anchor != 3))
             {
-                finishCommand(command, CommandFailed, "unsupported_blueprint_reform", "当前接口不应用含地基的工厂蓝图。", now, null);
+                finishCommand(command, CommandFailed, "invalid_command", "锚点或旋转不符合该蓝图的原生区域限制。", now, null);
                 return;
             }
             var factory = GameMain.localPlanet?.factory;
@@ -73,11 +69,9 @@ namespace AutomaticDSP.Tasks
                 finishCommand(command, CommandFailed, "game_not_ready", "当前行星建造系统未就绪。", now, null);
                 return;
             }
-            if (GameMain.history.blueprintLimit < blueprint.buildings.Length ||
-                blueprint.buildings.Any(b => !GameMain.history.ItemUnlocked(b.itemId) ||
-                    (b.recipeId > 0 && !GameMain.history.RecipeUnlocked(b.recipeId))))
+            if (GameMain.history.blueprintLimit < blueprint.buildings.Length)
             {
-                finishCommand(command, CommandFailed, "tech_locked", "蓝图规模、建筑或配方尚未解锁。", now, null);
+                finishCommand(command, CommandFailed, "tech_locked", "蓝图规模超过已解锁上限。", now, null);
                 return;
             }
             var snapped = factory.planet.aux.Snap(position, onTerrain: true);
@@ -86,23 +80,47 @@ namespace AutomaticDSP.Tasks
                 finishCommand(command, CommandFailed, "out_of_range", "请先移动到蓝图落点的建造范围内。", now, null);
                 return;
             }
-            var tool = new BuildTool_BlueprintPaste();
+            if (blueprint.areas.Length > 1 &&
+                (blueprint.areas.Length % 2 != 1 || blueprint.areas.Length / 2 != blueprint.primaryAreaIdx))
+            {
+                var expectedRotation = (BlueprintUtils.GetLatitudeRad(snapped.normalized) > 0f) !=
+                    (blueprint.primaryAreaIdx < blueprint.areas.Length / 2) ? 180f : 0f;
+                if (rotation != expectedRotation)
+                {
+                    finishCommand(command, CommandFailed, "invalid_command", "该跨区域蓝图的原生朝向由落点半球决定。", now,
+                        new JsonObject { ["requiredRotation"] = expectedRotation });
+                    return;
+                }
+            }
+            if (!AutomationBlueprintTool.Available)
+            {
+                finishCommand(command, CommandFailed, "native_api_unavailable", "原生蓝图地基方法不可用。", now, null);
+                return;
+            }
+            var tool = new AutomationBlueprintTool();
+            var stateMayHaveChanged = false;
             try
             {
                 tool._Init(GameMain.data);
+                // 原生碰撞激活要求建造系统已打开，否则远处已有对象不会参与覆盖和碰撞校验。
+                player.controller.cmd.type = ECommand.Build;
+                command.EnteredBuildMode = true;
+                actionBuild.Open();
                 actionBuild.SetFactoryReferences();
                 tool.SetFactoryReferences();
                 tool.blueprint = blueprint;
-                // 独立工具不打开玩家面板，补齐原生 OnOpen 初始化的预览配色状态。
-                tool.highlightItems = new Dictionary<int, uint>();
-                tool.useReforms = false;
+                // 独立工具不打开玩家面板，显式初始化原生每帧库存快照和预览状态。
+                tool.PrepareInventory();
+                tool.useReforms = GetBool(command, "useReforms", true);
+                tool.usePalette = GetBool(command, "usePalette", false);
+                tool.skipAutoReform = !GetBool(command, "autoReform", false);
                 tool.autoBuryBase = false;
                 tool.yaw = rotation;
-                tool.anchorType = 0;
+                tool.anchorType = anchor;
                 tool.cursorValid = true;
                 tool.castGroundPosSnapped = snapped;
                 tool.dotsCursor = 1;
-                tool.dotsSnapped[0] = BlueprintUtils.RecalculateCursorPos(snapped, rotation, blueprint, 0, tool.segment);
+                tool.dotsSnapped[0] = BlueprintUtils.RecalculateCursorPos(snapped, rotation, blueprint, anchor, tool.segment);
                 BlueprintUtils.SnapTropic(actionBuild, blueprint, tool.dotsSnapped, 1, rotation, tool.segment);
                 tool.GenerateBlueprintGratBoxes();
                 if (!tool.CheckBuildConditionsPrestage())
@@ -113,58 +131,113 @@ namespace AutomaticDSP.Tasks
                 }
                 tool.DeterminePreviewsPrestage(_forceRefreshBP: true);
                 var previews = tool.bpPool.Take(tool.bpCursor).Where(p => p != null && p.bpgpuiModelId > 0).ToArray();
-                if (previews.Length == 0 || previews.Any(p => Vector3.Distance(player.position, p.lpos) > player.mecha.buildArea))
+                if (previews.Length == 0 && (!tool.useReforms || blueprint.reformData.reformCount == 0))
                 {
-                    finishCommand(command, CommandFailed, "out_of_range", "蓝图内全部建筑必须位于当前建造范围内。", now, null);
+                    finishCommand(command, CommandFailed, "invalid_blueprint", "原生蓝图没有生成建筑预览。", now, null);
                     return;
                 }
                 tool.ActiveColliders(actionBuild.model);
                 bool valid;
                 try { valid = tool.CheckBuildConditions(); }
                 finally { tool.DeactiveColliders(actionBuild.model); }
-                var failures = previews.Where(p => p.condition != EBuildCondition.Ok && p.condition != EBuildCondition.NotEnoughItem)
-                    .Select(p => new JsonObject { ["itemId"] = p.item.ID, ["condition"] = p.condition.ToString(), ["position"] = Vector(p.lpos) }).ToArray();
-                if (!valid || failures.Length > 0)
+                tool.CalculateReforms();
+                var reformCount = tool.estReformCount;
+                var foundationBefore = player.package.GetItemCount(1131);
+                var sandBefore = player.sandCount;
+                if ((tool.result & (EBlueprintPasteResult.HasReform | EBlueprintPasteResult.BuildingNeedReform)) != 0)
+                {
+                    // 地基先执行，再按更新后的地形重新校验建筑；失败也必须反馈已发生的地形变化。
+                    var reformTool = actionBuild.reformTool;
+                    var previousBury = reformTool.buryVeins;
+                    try
+                    {
+                        reformTool.buryVeins = GetBool(command, "buryVeins", previousBury);
+                        stateMayHaveChanged = true;
+                        if (!tool.ApplyReforms())
+                        {
+                            finishCommand(command, CommandFailed, "native_reform_failed", "原生地基粘贴拒绝，请核对地基和沙土。", now,
+                                new JsonObject { ["requiredFoundations"] = reformCount, ["estimatedSand"] = tool.estNeedSandCount,
+                                    ["stateMayHaveChanged"] = true });
+                            return;
+                        }
+                    }
+                    finally { reformTool.buryVeins = previousBury; }
+                    tool.ClearErrorMessage(force: true);
+                    tool.DeterminePreviewsPrestage(_forceRefreshBP: false, retry: true);
+                    previews = tool.bpPool.Take(tool.bpCursor).Where(p => p != null && p.bpgpuiModelId > 0).ToArray();
+                    tool.ActiveColliders(actionBuild.model);
+                    try { valid = tool.CheckBuildConditions(); }
+                    finally { tool.DeactiveColliders(actionBuild.model); }
+                }
+                var failures = new List<JsonObject>();
+                for (var i = 0; i < previews.Length; i++)
+                {
+                    var preview = previews[i];
+                    if (preview.condition != EBuildCondition.Ok && preview.condition != EBuildCondition.NotEnoughItem)
+                        failures.Add(new JsonObject { ["index"] = i, ["itemId"] = preview.item.ID,
+                            ["condition"] = preview.condition.ToString(), ["position"] = Vector(preview.lpos) });
+                }
+                if (!allowPartial && (!valid || failures.Count > 0))
                 {
                     finishCommand(command, CommandFailed, "native_validation_failed", "原生蓝图建造校验拒绝。", now,
-                        new JsonObject { ["conditions"] = failures });
+                        new JsonObject { ["conditions"] = failures, ["stateMayHaveChanged"] = stateMayHaveChanged });
                     return;
                 }
-                if (previews.Any(p => p.coverObjId != 0))
-                {
-                    finishCommand(command, CommandFailed, "unsupported_blueprint_overlap", "当前接口只支持空地粘贴，不覆盖现有建筑。", now, null);
-                    return;
-                }
-                var missing = previews.GroupBy(p => p.item.ID).Where(g =>
-                    player.package.GetItemCount(g.Key) + (player.inhandItemId == g.Key ? player.inhandItemCount : 0) < g.Count())
-                    .Select(g => new JsonObject { ["itemId"] = g.Key, ["required"] = g.Count() }).ToArray();
-                if (missing.Length > 0)
-                {
-                    finishCommand(command, CommandFailed, "not_enough_items", "背包与手持建筑不足。", now, new JsonObject { ["items"] = missing });
-                    return;
-                }
-                player.controller.cmd.type = ECommand.Build;
-                command.EnteredBuildMode = true;
+                // 原生允许缺料预建；施工半径和后续补料由原生无人机系统处理。
+                command.BuildPlanetId = factory.planet.id;
+                stateMayHaveChanged = true;
                 tool.CreatePrebuilds();
-                if (previews.Any(p => p.objId == 0))
+                // 原生升级缺料时仍返回覆盖对象 ID，必须核对型号，不能当作已下达的升级。
+                var skipped = GetBlueprintUpgradeFailures(factory, previews);
+                var upgradeFailed = skipped.Count > 0;
+                var failedUpgradeObjects = new HashSet<int>(skipped.Select(s => (int)s["objectId"]));
+                var placed = previews.Where(p => p.objId != 0 && !failedUpgradeObjects.Contains(p.objId)).ToArray();
+                for (var i = 0; i < previews.Length; i++)
                 {
-                    finishCommand(command, CommandFailed, "build_failed", "原生蓝图未创建全部预建；检查现场，已创建部分不会撤销。", now,
-                        new JsonObject { ["objectIds"] = previews.Select(p => p.objId).ToArray(), ["stateMayHaveChanged"] = true });
+                    var preview = previews[i];
+                    if (preview.objId == 0)
+                        skipped.Add(new JsonObject { ["index"] = i, ["itemId"] = preview.item.ID,
+                            ["condition"] = preview.condition.ToString(), ["position"] = Vector(preview.lpos) });
+                }
+                var result = new JsonObject
+                {
+                    ["planetId"] = factory.planet.id, ["buildingCount"] = previews.Length,
+                    ["placedCount"] = placed.Length, ["skipped"] = skipped, ["partial"] = skipped.Count > 0,
+                    ["reusedCount"] = placed.Count(p => p.coverObjId != 0),
+                    ["upgradedCount"] = placed.Count(p => p.coverObjId != 0 && p.willRemoveCover),
+                    ["foundationDelta"] = player.package.GetItemCount(1131) - foundationBefore,
+                    ["sandDelta"] = player.sandCount - sandBefore, ["stateMayHaveChanged"] = true
+                };
+                command.Result = result;
+                if ((!allowPartial && skipped.Count > 0) || (placed.Length == 0 && previews.Length > 0))
+                {
+                    finishCommand(command, CommandFailed, upgradeFailed ? "upgrade_failed" : "build_failed",
+                        "原生蓝图未完成全部下达或覆盖升级；检查 skipped，已发生的改动不会撤销。", now,
+                        result);
+                    return;
+                }
+                if (placed.Length == 0)
+                {
+                    result["submitted"] = true;
+                    result["objectIds"] = new int[0];
+                    result["prebuildIds"] = new int[0];
+                    result["entityIds"] = new int[0];
+                    finishCommand(command, CommandSucceeded, null, null, now, result);
                     return;
                 }
                 command.BuildTargets = new List<BuildWaitTarget>();
-                foreach (var preview in previews)
+                var retainedIndices = new Dictionary<BuildPreview, int>();
+                foreach (var preview in placed)
                 {
                     // 原生工具释放时清空预览，保留独立副本供落成与连接匹配使用。
-                    var retained = new BuildPreview();
-                    retained.Clone(preview);
-                    command.BuildTargets.Add(new BuildWaitTarget(preview.objId, preview.item.ID, preview.lpos, retained));
+                    retainedIndices.Add(preview, command.BuildTargets.Count);
+                    command.BuildTargets.Add(new BuildWaitTarget(preview.objId, preview.item.ID, preview.lpos, preview));
                 }
-                for (var i = 0; i < previews.Length; i++)
+                for (var i = 0; i < placed.Length; i++)
                 {
                     var retained = command.BuildTargets[i].Preview;
-                    var inputIndex = Array.IndexOf(previews, previews[i].input);
-                    var outputIndex = Array.IndexOf(previews, previews[i].output);
+                    var inputIndex = placed[i].input != null && retainedIndices.TryGetValue(placed[i].input, out var input) ? input : -1;
+                    var outputIndex = placed[i].output != null && retainedIndices.TryGetValue(placed[i].output, out var output) ? output : -1;
                     retained.input = inputIndex < 0 ? null : command.BuildTargets[inputIndex].Preview;
                     retained.output = outputIndex < 0 ? null : command.BuildTargets[outputIndex].Preview;
                 }
@@ -173,11 +246,31 @@ namespace AutomaticDSP.Tasks
             {
                 // 原生预览依赖游戏版本与场景；异常必须终止本次命令，不能逐帧重复下达。
                 finishCommand(command, CommandFailed, "native_blueprint_error", ex.Message, now,
-                    new JsonObject { ["nativeException"] = ex.GetType().Name, ["stateMayHaveChanged"] = command.EnteredBuildMode });
+                    new JsonObject { ["nativeException"] = ex.GetType().Name, ["stateMayHaveChanged"] = stateMayHaveChanged });
                 return;
             }
-            finally { tool._Free(); }
-            WaitForBuiltObjectsLocked(command, now);
+            finally
+            {
+                try { tool.RegisterItemConsumption(); }
+                finally { tool._Free(); }
+            }
+            CompleteBuildSubmission(command, now);
+        }
+
+        private static List<JsonObject> GetBlueprintUpgradeFailures(PlanetFactory factory, BuildPreview[] previews)
+        {
+            var failures = new List<JsonObject>();
+            for (var i = 0; i < previews.Length; i++)
+            {
+                var preview = previews[i];
+                if (preview.coverObjId == 0 || !preview.willRemoveCover || preview.objId == 0) continue;
+                var actualItemId = preview.objId > 0 ? factory.entityPool[preview.objId].protoId : factory.prebuildPool[-preview.objId].protoId;
+                if (actualItemId != preview.item.ID)
+                    failures.Add(new JsonObject { ["index"] = i, ["objectId"] = preview.objId,
+                        ["itemId"] = preview.item.ID, ["actualItemId"] = actualItemId,
+                        ["condition"] = "UpgradeNotApplied", ["position"] = Vector(preview.lpos) });
+            }
+            return failures;
         }
     }
 }

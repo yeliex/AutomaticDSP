@@ -12,7 +12,7 @@ namespace AutomaticDSP.Tasks
         {
             if (command.BuildObjectId != 0)
             {
-                WaitForBuiltObjectLocked(command, now);
+                CompleteBuildSubmission(command, now);
                 return;
             }
 
@@ -241,16 +241,17 @@ namespace AutomaticDSP.Tasks
                 }
 
                 command.BuildObjectId = preview.objId;
-                command.BuildPreview = preview;
+                command.BuildPreview = new BuildPreview();
+                command.BuildPreview.Clone(preview);
                 command.BuildItemId = itemId;
-                command.BuildPosition = snappedPosition;
+                command.BuildPosition = preview.lpos;
             }
             finally
             {
                 tool._Free();
             }
 
-            WaitForBuiltObjectLocked(command, now);
+            CompleteBuildSubmission(command, now);
         }
 
         private static bool IsMiningBuilding(ItemProto item)

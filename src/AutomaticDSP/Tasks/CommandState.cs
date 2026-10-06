@@ -97,6 +97,10 @@ namespace AutomaticDSP.Tasks
         public Vector3 BuildPosition { get; set; }
 
         public List<BuildWaitTarget> BuildTargets { get; set; }
+
+        public int BuildPlanetId { get; set; }
+
+        public DateTimeOffset NextEntityReferenceCheck { get; set; }
     }
 
 }

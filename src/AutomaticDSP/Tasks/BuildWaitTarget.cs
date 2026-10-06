@@ -9,7 +9,11 @@ namespace AutomaticDSP.Tasks
             ObjectId = objectId;
             ItemId = itemId;
             Position = position;
-            Preview = preview;
+            if (preview != null)
+            {
+                Preview = new BuildPreview();
+                Preview.Clone(preview);
+            }
         }
 
         public int ObjectId { get; }

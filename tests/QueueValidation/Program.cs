@@ -11,18 +11,19 @@ using static AutomaticDSP.Tasks.TaskStatusNames;
 static class Program
 {
     static int Executions;
+    public static bool EntityReady;
     static readonly Dictionary<string,CommandState> Seen=new();
     static readonly HashSet<string> Complete=new();
     static TaskQueueService New()
     {
-        Executions=0;Seen.Clear();Complete.Clear();TaskCommandExecutor.Stops.Clear();
+        EntityReady=false;Executions=0;Seen.Clear();Complete.Clear();TaskCommandExecutor.Stops.Clear();
         TaskCommandExecutor.Behavior=(c,f,n)=>{
             Executions++;Seen[c.Id]=c;
             if(c.Id.StartsWith("fail")) {f(c,CommandFailed,"test",null,n,null);return;}
             if(c.Type=="placeBuilding") {c.BuildObjectId=-1;c.EnteredBuildMode=!c.Background;}
             if(c.Type=="applyFactoryBlueprint") {c.BuildTargets=new();c.EnteredBuildMode=!c.Background;}
             if(c.Type=="craftInventory"||c.Type=="researchTech") c.ActionIssued=true;
-            if(c.Type=="discardInventoryItem"||c.Type=="noop"||Complete.Contains(c.Id)) f(c,CommandSucceeded,null,null,n,new JsonObject());
+            if(c.Type=="placeBuilding"||c.Type=="applyFactoryBlueprint"||c.Type=="discardInventoryItem"||c.Type=="noop"||Complete.Contains(c.Id)) f(c,CommandSucceeded,null,null,n,new JsonObject());
         };
         return new(new HistoryStore(),new ManualLogSource());
     }
@@ -40,25 +41,25 @@ static class Program
         var q=New();Add(q,C("move","moveTo"),C("craft","craftInventory"),C("research","researchTech"),C("trash","discardInventoryItem"));q.Update();
         Check(Seen.Count==4&&Seen["move"].OwnsPlayerOrders&&Seen["craft"].Background&&Seen["research"].Background&&Seen["trash"].Status==CommandSucceeded,"四通道与垃圾自动分流");
         q=New();var id=Add(q,C("build","placeBuilding"),C("move","moveTo"));q.Update();
-        Check(Seen["build"].Background&&!Seen["build"].EnteredBuildMode&&Seen["move"].OwnsPlayerOrders,"预建释放移动与建造模式");
-        Check((string)((JsonObject)q.GetTaskResponse(id)["task"])["status"]==TaskRunning,"预建不冒充整项完成");
+        Check(Seen["build"].Status==CommandSucceeded&&!Seen["build"].EnteredBuildMode&&Seen["move"].OwnsPlayerOrders,"预建释放移动与建造模式");
+        Check((string)((JsonObject)q.GetTaskResponse(id)["task"])["status"]==TaskRunning,"后续移动仍运行，但预建下达已完成");
         q=New();id=Add(q,C("blueprint","applyFactoryBlueprint"),C("move","moveTo"));q.Update();
-        Check(Seen["blueprint"].Background&&!Seen["blueprint"].EnteredBuildMode&&Seen["move"].OwnsPlayerOrders,"蓝图预建释放机甲通道");
-        Check((string)((JsonObject)q.GetTaskResponse(id)["task"])["status"]==TaskRunning,"蓝图必须等待实际落成");
+        Check(Seen["blueprint"].Status==CommandSucceeded&&!Seen["blueprint"].EnteredBuildMode&&Seen["move"].OwnsPlayerOrders,"蓝图预建释放机甲通道");
+        Check((string)((JsonObject)q.GetTaskResponse(id)["task"])["status"]==TaskRunning,"后续移动仍运行，但蓝图已下达完成");
         q=New();Add(q,C("blueprint","applyFactoryBlueprint"),C("after","noop","blueprint"));q.Update();
-        Check(!Seen.ContainsKey("after"),"蓝图显式依赖等待整组落成");Complete.Add("blueprint");q.Update();Check(Seen.ContainsKey("after"),"蓝图落成释放显式依赖");
+        Check(Seen.ContainsKey("after"),"蓝图下达立即释放显式依赖");
         q=New();var connect=C("connect","placeSorter");connect.ExtensionData=new Dictionary<string,JToken>{{"input",JObject.Parse("{commandId:'build',slot:0}")}};
-        Add(q,C("build","placeBuilding"),connect);q.Update();Check(!Seen.ContainsKey("connect"),"实体引用自动等待落成");Complete.Add("build");q.Update();Check(Seen.ContainsKey("connect"),"落成后释放依赖");
+        Add(q,C("build","placeBuilding"),connect,C("unrelated","noop"));q.Update();Check(!Seen.ContainsKey("connect"),"实体引用自动等待落成");Check(Seen.ContainsKey("unrelated"),"实体引用等待不阻止无关指令");EntityReady=true;q.Update();Check(Seen.ContainsKey("connect"),"落成后释放实体引用");
         q=New();var bg=Add(q,C("build","placeBuilding"));Add(q,C("move","moveTo"));q.Update();TaskCommandExecutor.Stops.Clear();q.Cancel(bg);q.Update();
         Check(TaskCommandExecutor.Stops.Count==0&&Seen["move"].OwnsPlayerOrders,"取消后台建造不停止其他任务移动");
         q=New();var timeout=C("build","placeBuilding");timeout.TimeoutSeconds=60;Add(q,timeout);Add(q,C("move","moveTo"));q.Update();Seen["build"].StartedAt=DateTimeOffset.UtcNow.AddSeconds(-61);TaskCommandExecutor.Stops.Clear();q.Update();
-        Check(Seen["build"].Status==CommandFailed&&TaskCommandExecutor.Stops.Count==0&&Seen["move"].OwnsPlayerOrders,"后台建造超时不清除移动订单");
+        Check(Seen["build"].Status==CommandSucceeded&&TaskCommandExecutor.Stops.Count==0&&Seen["move"].OwnsPlayerOrders,"下达完成的建造不会再超时或清除移动订单");
         q=New();Add(q,C("craft","craftInventory"),C("build","placeBuilding","craft"),C("trash","discardInventoryItem"));q.Update();
         Check(!Seen.ContainsKey("build")&&Seen["trash"].Status==CommandSucceeded,"显式材料依赖不堵即时操作");Complete.Add("craft");q.Update();Check(Seen.ContainsKey("build"),"制造完成释放依赖");
         q=New();Add(q,C("move1","moveTo"));Add(q,C("move2","moveTo"),C("trash","discardInventoryItem"));q.Update();Check(!Seen.ContainsKey("move2")&&Seen.ContainsKey("trash"),"跨任务机甲互斥且垃圾无需排队");Complete.Add("move1");q.Update();Check(Seen.ContainsKey("move2"),"移动按先后顺序推进");
         q=New();var rejected=false;try{Add(q,C("x","noop","future"),C("future","noop"));}catch(TaskQueueException){rejected=true;}Check(rejected,"提交时拒绝前向依赖与环");
         q=New();Add(q,C("build","placeBuilding"),C("move","moveTo"),C("fail-trash","discardInventoryItem"),C("later","noop"));q.Update();
-        Check(Seen["build"].Status==CommandCancelled&&Seen["move"].Status==CommandCancelled&&!Seen.ContainsKey("later"),"失败停止本任务未完成工作");
+        Check(Seen["build"].Status==CommandSucceeded&&Seen["move"].Status==CommandCancelled&&!Seen.ContainsKey("later"),"失败停止本任务未完成工作");
         q=New();GameMain.gameTick=10;var paused=C("paused","waitUntil");paused.TimeoutSeconds=1;Add(q,paused);q.Update();Seen["paused"].StartedAt=DateTimeOffset.UtcNow.AddSeconds(-2);q.Update();
         Check(GameMain.gameTick==10&&Seen["paused"].Status==CommandFailed,"游戏 tick 不推进时仍按墙钟超时");
         foreach(var type in new[]{"reformTerrain","collectVegetation","plantVegetation"})

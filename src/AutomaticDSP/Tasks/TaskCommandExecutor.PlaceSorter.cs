@@ -13,7 +13,7 @@ namespace AutomaticDSP.Tasks
         {
             if (command.BuildTargets != null)
             {
-                WaitForBuiltObjectsLocked(command, now);
+                CompleteBuildSubmission(command, now);
                 return;
             }
 
@@ -210,7 +210,7 @@ namespace AutomaticDSP.Tasks
                 tool._Free();
             }
 
-            WaitForBuiltObjectsLocked(command, now);
+            CompleteBuildSubmission(command, now);
         }
         private static Quaternion OrientBeltSorterSlot(Quaternion rotation, Vector3 direction)
         {

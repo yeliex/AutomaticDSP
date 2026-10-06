@@ -109,6 +109,7 @@ namespace AutomaticDSP.Tasks
                         blockedQueues.Add(queue);
                         continue;
                     }
+                    if (!commandExecutor.AreEntityReferencesReady(task, command, now)) continue;
                     StartTask(task, now);
                     StartCommandLocked(command, now);
                     command.OwnsPlayerOrders = UsesPlayer(command);
@@ -150,11 +151,10 @@ namespace AutomaticDSP.Tasks
                 command.OwnsPlayerOrders = false;
                 return;
             }
-            var nativeWaiting = command.BuildObjectId != 0 || command.BuildTargets != null ||
-                ((CommandQueue(command) == "craft" || CommandQueue(command) == "research") && command.ActionIssued);
+            var nativeWaiting = (CommandQueue(command) == "craft" || CommandQueue(command) == "research") && command.ActionIssued;
             if (nativeWaiting && !command.Background)
             {
-                // 预建已下达，释放建造模式和本命令靠近订单；后续等待不碰其他命令的移动。
+                // 原生制造和科研独立推进，后台等待不占用机甲订单。
                 commandExecutor.StopCommandEffects(command);
                 commandExecutor.ExitCommandBuildMode(command);
                 command.OwnsPlayerOrders = false;

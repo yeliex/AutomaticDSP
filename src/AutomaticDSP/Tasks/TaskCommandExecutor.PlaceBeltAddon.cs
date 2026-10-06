@@ -102,7 +102,8 @@ namespace AutomaticDSP.Tasks
                     return;
                 }
                 command.BuildObjectId = preview.objId;
-                command.BuildPreview = preview;
+                command.BuildPreview = new BuildPreview();
+                command.BuildPreview.Clone(preview);
                 command.BuildItemId = item.ID;
                 command.BuildPosition = preview.lpos;
             }
@@ -110,7 +111,7 @@ namespace AutomaticDSP.Tasks
             {
                 tool._Free();
             }
-            WaitForBuiltObjectLocked(command, now);
+            CompleteBuildSubmission(command, now);
         }
     }
 }

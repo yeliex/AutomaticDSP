@@ -123,13 +123,19 @@ namespace AutomaticDSP.Tasks
                 finishCommand(command, CommandFailed, "target_not_empty", "原生蓝图只能粘贴到没有节点的目标。", now, null);
                 return;
             }
+            // 无节点的层仍可能有网格画布，原生 UI 会提示此覆盖；接口明确反馈同一副作用。
+            var overwritesGridCanvas = type == EDysonBlueprintType.SingleLayer ? layer.cellColors != null : false;
+            if (type == EDysonBlueprintType.DysonSphere || type == EDysonBlueprintType.Layers)
+                foreach (var existingLayer in sphere.layersIdBased)
+                    overwritesGridCanvas |= existingLayer?.cellColors != null;
             var result = blueprint.FromBase64String(code, type, sphere, layer);
             finishCommand(command, result == DysonBlueprintDataIOError.OK ? CommandSucceeded : CommandFailed,
                 result == DysonBlueprintDataIOError.OK ? null : "native_import_failed", null, now, new JsonObject
                 {
                     ["starId"] = starId, ["layerId"] = layerId, ["blueprintType"] = typeToken.Value<string>(),
                     ["nativeCondition"] = result.ToString(), ["completion"] = "design", ["atomic"] = false,
-                    ["stateMayHaveChanged"] = true, ["nodeCount"] = sphere.totalNodeCount
+                    ["stateMayHaveChanged"] = true, ["nodeCount"] = sphere.totalNodeCount,
+                    ["overwritesGridCanvas"] = overwritesGridCanvas
                 });
         }
 

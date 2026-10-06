@@ -8,6 +8,33 @@ namespace AutomaticDSP.Tasks
 {
     internal sealed partial class TaskCommandExecutor
     {
+        public bool AreEntityReferencesReady(TaskState task, CommandState command, DateTimeOffset now)
+        {
+            if (now < command.NextEntityReferenceCheck) return false;
+            var references = new List<KeyValuePair<string, int>>();
+            foreach (var name in new[] { "target", "start", "end", "input", "output" })
+            {
+                if (TryGetToken(command, name, out var token) && token is JObject obj &&
+                    obj.TryGetValue("commandId", StringComparison.OrdinalIgnoreCase, out var id))
+                    references.Add(new KeyValuePair<string, int>(id.Value<string>(),
+                        obj.TryGetValue("entityIndex", StringComparison.OrdinalIgnoreCase, out var index) ? index.Value<int>() : 0));
+            }
+            foreach (var name in new[] { "start", "end", "input", "output" })
+                if (TryGetToken(command, name + "CommandId", out var id))
+                    references.Add(new KeyValuePair<string, int>(id.Value<string>(), GetInt(command, name + "EntityIndex", 0)));
+            foreach (var reference in references)
+            {
+                var source = task.Commands.Find(c => string.Equals(c.Id, reference.Key, StringComparison.OrdinalIgnoreCase));
+                if (source?.BuildTargets == null) continue;
+                TryResolveBuildTarget(source, reference.Value, out _, out var pending);
+                if (!pending) continue;
+                command.Phase = "waitingConstruction";
+                command.NextEntityReferenceCheck = now.AddSeconds(1);
+                return false;
+            }
+            return true;
+        }
+
         private static bool TryGetTargetEntityId(TaskState task, CommandState command, out int entityId, out string errorMessage)
         {
             if (TryGetInt(command, "entityId", out entityId))
@@ -87,6 +114,18 @@ namespace AutomaticDSP.Tasks
                 if (sourceCommand.Status != CommandSucceeded)
                 {
                     errorMessage = $"commandId has not succeeded: {commandId}";
+                    return false;
+                }
+
+                if (sourceCommand.BuildTargets != null)
+                {
+                    if (sourceCommand.BuildPlanetId != GameMain.localPlanet?.id)
+                    {
+                        errorMessage = "引用的建筑不在当前行星。";
+                        return false;
+                    }
+                    if (TryResolveBuildTarget(sourceCommand, entityIndex, out entityId, out _)) return true;
+                    errorMessage = "引用的预建尚未落成或对应建筑已不存在。";
                     return false;
                 }
 

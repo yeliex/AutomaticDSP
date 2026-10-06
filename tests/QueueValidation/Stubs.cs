@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using AutomaticDSP.Tasks;
 namespace UnityEngine { public struct Vector3 {} }
 public class ForgeTask {}
-public class BuildPreview {}
+public class BuildPreview { public void Clone(BuildPreview other) {} }
 public enum EObjectType { None }
 public static class GameMain { public static long gameTick; }
 namespace BepInEx.Logging { public class ManualLogSource { public void LogWarning(object message) { throw new Exception(message.ToString()); } } }
@@ -18,6 +18,7 @@ namespace AutomaticDSP.Tasks
         private readonly TaskCommandFinisher finish;
         public TaskCommandExecutor(TaskCommandFinisher finish) {this.finish=finish;}
         public void Execute(TaskState task,CommandState c,DateTimeOffset now) => Behavior(c,finish,now);
+        public bool AreEntityReferencesReady(TaskState task,CommandState c,DateTimeOffset now) => c.Id != "connect" || Program.EntityReady;
         public void ExitCommandBuildMode(CommandState c) {c.EnteredBuildMode=false;}
         public void StopCommandEffects(CommandState c) {if(c.OwnsPlayerOrders)Stops.Add(c.Id);}
         public static object FlightResult(FlightInput input)=>null; public object TimeoutResult(CommandState c)=>null;

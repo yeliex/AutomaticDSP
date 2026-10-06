@@ -2,7 +2,7 @@ using System.IO.Compression;
 using System.Reflection;
 using System.Runtime.Loader;
 
-// 只执行真实程序集的有界解压与类型映射，不装载存档或调用原生建造。
+// 执行真实程序集的蓝图校验及下达、引用与升级结果检查，不装载存档或调用原生建造。
 var mod = Path.GetFullPath("src/AutomaticDSP/bin/Debug/net472");
 var game = "C:/Program Files (x86)/Steam/steamapps/common/Dyson Sphere Program";
 AssemblyLoadContext.Default.Resolving += (_, name) => {
@@ -38,3 +38,4 @@ foreach (var value in new[] { "sphere", "layers", "layer", "swarm" })
     Assert((bool)type.Invoke(null, new object[] { value, null })!, "显式戴森蓝图类型 " + value);
 Assert(!(bool)type.Invoke(null, new object[] { "factory", null })!, "工厂类型不能映射为戴森设计");
 Console.WriteLine($"蓝图边界验证通过：{checks} 项");
+BuildWaitValidation.Run(assembly);
