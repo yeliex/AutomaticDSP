@@ -6,6 +6,7 @@
 
 ```powershell
 dotnet run --project tests/CapabilityValidation/CapabilityValidation.csproj -v quiet
+dotnet run --project tests/BeltTerrainValidation/BeltTerrainValidation.csproj -v quiet
 dotnet run --project tests/QueueValidation/QueueValidation.csproj -v quiet
 dotnet run --project tests/MovementValidation/MovementValidation.csproj -v quiet -p:NoWarn=0649
 dotnet run --project tests/QueryValidation/QueryValidation.csproj -v quiet
@@ -19,6 +20,7 @@ dotnet run --project tests/StatisticsValidation/StatisticsValidation.csproj -v q
 | 项目 | 覆盖范围 | 前置条件与边界 |
 | --- | --- | --- |
 | CapabilityValidation | 40 项：权限、提示身份、取消、传送带反转边界和垃圾入口 | 链接真实 Mod 源文件；假对象仅提供原生状态和回调 |
+| BeltTerrainValidation | 20 项：穿地、地表修改、段内隆起、球面弦、水面、坡道、高架、已有首尾接头、容差、坐标不变与异常输入 | 链接生产高度校验及真实 Unity Vector3；安装游戏后可离线运行，不连接对局。地形高度为夹具，不证明原生建造调用链、碰撞或完整运输网格；仍需以后加载新版 Mod 实机验收 |
 | QueueValidation | 32 项：调度通道、依赖及机甲互斥，包含导航不被后续命令覆盖、已下达建造不再超时、地形、植被与实体引用等待 | 链接真实调度器，隔离命令执行与历史存储；需先构建 Mod 提供 Newtonsoft.Json.dll |
 | QueryValidation | 真实查询器的离线查询与序列化；建筑占用落点的附近停靠、负尺寸碰撞、连续局部绕行与贴边脱离；导航加速储备、短距离曲速校验、低能退出后的充能与重复曲速、人工接管后的重新规划与输入包装恢复／冲突；跨 tick、暂停及读档回退的批次调度；手搓缺玩家／制造器、太空请求校验与任务跟踪；远程运输站入口、物流距离／起送量／开关类型及失败不修改原值；配送器入口与开关类型；大矿机真实组件速度与边界 | 需先构建 Mod，并安装游戏；加载 AutomaticDSP.dll 和本机游戏程序集。手搓夹具不模拟原生物资消耗或制造推进，调度夹具不模拟实机帧率，飞行夹具不驱动原生物理或完整着陆。可传仓库根目录参数；游戏路径目前固定在测试入口中 |
 | StateSummaryValidation | 10 项：垃圾分类、建筑名称、回收槽过滤、截断计数、垃圾块数与物品数区分、按需明细 | 链接真实垃圾与建造摘要实现，使用隔离数据 |

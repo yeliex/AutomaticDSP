@@ -821,7 +821,9 @@ query ObserveStorage {
 
 生产专用设置支持 `setRayReceiverMode`（`mode: power/photon`）、`setEjectorOrbit`（非负 `orbitId`，可选布尔 `autoOrbit`）和 `setProliferatorMode`（`mode: extra/speed`）。都接受实体目标引用及可选 `planetId`，要求当前行星和机甲建造范围内。光子模式检查产物解锁，切回发电返还整数缓存产物并清空缓存；弹射器仅选择现有启用轨道，0 清除指定轨道，自动换轨可在后续改变目标；增产切换遵循制造配方与矩阵生产模式约束，并同步堆叠研究站。参数、返回值及状态核对见 [生产模式与发射轨道](../skills/automatic-dsp/references/interface/game-control.md#生产模式与发射轨道)。
 
-`placeBelt` 支持两种路径输入。`points` 可包含两个或多个行星局部坐标点；实现会按相邻点调用游戏网格吸附并生成传送带预览。
+`placeBelt` 支持两种路径输入。`points` 接受 2–256 个行星局部坐标点，直接生成预览；只提供起终点时调用原生网格生成路径。Mod 不自动抬升或规划显式点列。
+
+两种输入均在原生建造校验前及预建提交前检查实际预览点和连接实体的真实带段／端口。沿全部相邻空间线段以不大于 0.1 米间距采样，包含端点，要求半径不低于 `max(QueryModifiedHeight(position), realRadius + 0.2)`，允许 0.01 米容差。线性插值保留球面弦下沉；水面带不贴海底，坡道／高架仍接受原生坡度与碰撞检查。低于下限返回 `belt_below_surface`，不下达预建，结果包含实际 `position`、`radius`、`modifiedHeight`、`minimumRadius`、`heightTolerance`、`sampleSpacing`、`pathIndex`、`segmentFraction` 及首尾实体端点标志。完整索引语义和边界见 [传送带接口契约](../skills/automatic-dsp/references/interface/game-control.md#建筑传送带与分拣器)。这是路径中心线采样，不替代原生碰撞校验或保证完整模型网格的连续净空。
 
 ```json
 {

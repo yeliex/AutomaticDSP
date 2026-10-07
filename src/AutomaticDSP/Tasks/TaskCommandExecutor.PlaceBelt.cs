@@ -101,6 +101,9 @@ namespace AutomaticDSP.Tasks
                     return;
                 }
 
+                if (!ValidateBeltTerrain(command, now, factory, tool, pathPoints, startEndpoint, endEndpoint))
+                    return;
+
                 player.controller.cmd.type = ECommand.Build;
                 command.EnteredBuildMode = true;
                 player.controller.cmd.mode = item.BuildMode;
@@ -223,6 +226,12 @@ namespace AutomaticDSP.Tasks
                     return;
                 }
 
+                // 原生碰撞校验可能调整预览高度，提交前必须检查最终坐标。
+                var finalPositions = new List<Vector3>();
+                foreach (var preview in tool.buildPreviews) finalPositions.Add(preview.lpos);
+                if (!ValidateBeltTerrain(command, now, factory, tool, finalPositions, startEndpoint, endEndpoint))
+                    return;
+
                 command.Phase = "creatingPrebuild";
                 var previousFilter = station == null ? 0 : station.slots[startEndpoint.Slot].storageIdx;
                 // 对齐 UIBeltBuildTip.SetFilterToEntity：原生连接建成前就已确定输出货槽。
@@ -256,6 +265,42 @@ namespace AutomaticDSP.Tasks
 
             CompleteBuildSubmission(command, now);
         }
+
+        private bool ValidateBeltTerrain(CommandState command, DateTimeOffset now, PlanetFactory factory,
+            AutomationPathBuildTool tool, List<Vector3> points, BeltEndpoint start, BeltEndpoint end)
+        {
+            if (factory.planet.data == null)
+            {
+                finishCommand(command, CommandFailed, "game_not_ready", "当前行星地形尚未加载。", now, null);
+                return false;
+            }
+
+            var positions = new List<Vector3>(points);
+            // 实体连接使用真实带段／端口位置；请求中的 position 不能隐藏接头穿地。
+            if (start?.EntityId > 0)
+            {
+                TryResolveBeltEndpoint(tool, factory, new BeltEndpoint(start.EntityId, start.Slot, false, Vector3.zero),
+                    out var position, out _);
+                positions.Insert(0, position);
+            }
+            if (end?.EntityId > 0)
+            {
+                TryResolveBeltEndpoint(tool, factory, new BeltEndpoint(end.EntityId, end.Slot, false, Vector3.zero),
+                    out var position, out _);
+                positions.Add(position);
+            }
+
+            var failure = BeltTerrainClearance.Check(positions, factory.planet.realRadius + 0.2f,
+                factory.planet.data.QueryModifiedHeight);
+            if (failure == null) return true;
+            failure["includesStartEndpoint"] = start?.EntityId > 0;
+            failure["includesEndEndpoint"] = end?.EntityId > 0;
+            finishCommand(command, CommandFailed,
+                (string)failure["reason"] == "invalid_geometry" ? "invalid_command" : "belt_below_surface",
+                "传送带路径或连接端点无法通过地表高度校验；请根据失败位置和实际地形重新指定路径。", now, failure);
+            return false;
+        }
+
         private static bool TryGetBeltPathPoints(
             TaskState task,
             CommandState command,
@@ -274,9 +319,9 @@ namespace AutomaticDSP.Tasks
             if (TryGetToken(command, "points", out var pointsToken))
             {
                 var points = pointsToken as JArray;
-                if (points == null || points.Count < 2)
+                if (points == null || points.Count < 2 || points.Count > 256)
                 {
-                    errorMessage = "placeBelt points must include at least two positions.";
+                    errorMessage = "placeBelt points must include 2 to 256 positions.";
                     return false;
                 }
 
