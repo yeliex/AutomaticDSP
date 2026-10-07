@@ -41,6 +41,7 @@ var colorResult=(IDictionary)marker["color"]!;
 if(markerRows.Count!=1 || (string)marker["word"]!="钛" || Convert.ToSingle(colorResult["r"])!=0.25f || Convert.ToSingle(colorResult["a"])!=1f)throw new Exception("信标颜色查询失败");
 Console.WriteLine("通过：真实 Mod 查询器筛选跨行星信标，保留非空文字及真实 Unity Color 的 RGBA。");
 CraftValidation.Run(assembly);
+VectorValidation.Run(assembly);
 QueryDispatchValidation.Run(assembly);
 FlightValidation.Run(assembly);
 LocalNavigationValidation.Run(assembly);

@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using AutomaticDSP.Serialization;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
@@ -47,25 +48,39 @@ namespace AutomaticDSP.Tasks
         private static bool TryReadVectorToken(JToken token, string name, out Vector3 value, out string errorMessage)
         {
             value = Vector3.zero;
+            JToken x = null, y = null, z = null;
             if (token is JArray array && array.Count == 3)
             {
-                value = new Vector3(array[0].Value<float>(), array[1].Value<float>(), array[2].Value<float>());
-                errorMessage = null;
-                return true;
+                x = array[0];
+                y = array[1];
+                z = array[2];
             }
-
-            if (token is JObject obj &&
-                obj.TryGetValue("x", StringComparison.OrdinalIgnoreCase, out var x) &&
-                obj.TryGetValue("y", StringComparison.OrdinalIgnoreCase, out var y) &&
-                obj.TryGetValue("z", StringComparison.OrdinalIgnoreCase, out var z))
+            else if (token is JObject obj)
             {
-                value = new Vector3(x.Value<float>(), y.Value<float>(), z.Value<float>());
+                obj.TryGetValue("x", StringComparison.OrdinalIgnoreCase, out x);
+                obj.TryGetValue("y", StringComparison.OrdinalIgnoreCase, out y);
+                obj.TryGetValue("z", StringComparison.OrdinalIgnoreCase, out z);
+            }
+
+            if (TryReadVectorComponent(x, out var vx) &&
+                TryReadVectorComponent(y, out var vy) &&
+                TryReadVectorComponent(z, out var vz))
+            {
+                value = new Vector3(vx, vy, vz);
                 errorMessage = null;
                 return true;
             }
 
-            errorMessage = $"{name} must be an array [x,y,z] or object {{x,y,z}}.";
+            errorMessage = $"{name} must be an array [x,y,z] or object {{x,y,z}} with finite numeric coordinates within the float range.";
             return false;
+        }
+
+        private static bool TryReadVectorComponent(JToken token, out float value)
+        {
+            value = 0;
+            return token != null && (token.Type == JTokenType.Integer || token.Type == JTokenType.Float) &&
+                float.TryParse(token.ToString(Newtonsoft.Json.Formatting.None), NumberStyles.Float,
+                    CultureInfo.InvariantCulture, out value) && !float.IsNaN(value) && !float.IsInfinity(value);
         }
 
         private static bool TryGetString(CommandState command, string name, out string value)
