@@ -94,6 +94,36 @@ static class LocalNavigationValidation
         listType.GetMethod("Add")!.Invoke(middleBlocked,new[]{Box(45,210,0,10,30,10)});
         routeArgs = new object?[]{middleBlocked,Vector(0,200,0),Vector(80,183.3f,0),200f,null};
         Check((bool)navigation.GetMethod("TryWaypoint",methods)!.Invoke(null,routeArgs)!, "长航段中间点被建筑占用时仍可选择旁侧路径");
+        foreach (var opposite in new[]{Vector(1,-200,0),Vector(0,-200,0),Vector(0.001f,-200,0)})
+        {
+            var oppositeStart = Vector(0,200,0);
+            var empty = Activator.CreateInstance(listType)!;
+            routeArgs = new object?[]{empty,oppositeStart,opposite,200f,null};
+            Check((bool)navigation.GetMethod("TryWaypoint",methods)!.Invoke(null,routeArgs)!, "近对跖与精确对跖目标可生成前进航段");
+            var nextPoint = routeArgs[4]!;
+            var nx = Component(nextPoint,"x");
+            var nz = Component(nextPoint,"z");
+            Check(nx * nx + nz * nz > 100 && Component(nextPoint,"y") > 190,
+                "对跖目标返回当前位置前方短航段，不将远处微小投影当作到达偏差");
+            var obstacle = Box(nx * 0.54f,214, nz * 0.54f,4,20,4);
+            var oppositeBlocked = Activator.CreateInstance(listType)!;
+            listType.GetMethod("Add")!.Invoke(oppositeBlocked,new[]{obstacle});
+            Check(!(bool)navigation.GetMethod("CanReachWaypoint",methods)!.Invoke(null,
+                new object[]{oppositeBlocked,oppositeStart,opposite,200f})!, "对跖方向的前方碰撞仍被检查");
+            foreach (var altitude in new[]{200f,250f})
+            {
+                routeArgs = new object?[]{oppositeBlocked,Vector(0,altitude,0),opposite,200f,null};
+                Check((bool)navigation.GetMethod("TryWaypoint",methods)!.Invoke(null,routeArgs)!,
+                    "对面目标受局部阻挡时，地面及升空起点均能绕行");
+                var detour = routeArgs[4]!;
+                Check(Component(detour,"y") > 180 && !Hit(obstacle,Vector(0,215,0),
+                    Vector(Component(detour,"x") * 1.075f,Component(detour,"y") * 1.075f,Component(detour,"z") * 1.075f),1.5f),
+                    "对跖绕行航段保持本地且不穿过障碍");
+            }
+        }
+        routeArgs = new object?[]{Activator.CreateInstance(listType),Vector(200,0,0),Vector(-200,0,0),200f,null};
+        Check((bool)navigation.GetMethod("TryWaypoint",methods)!.Invoke(null,routeArgs)! &&
+            Math.Abs(Component(routeArgs[4]!,"z")) > 10, "非极点的精确对跖方向也能稳定推进");
         var blocked = Activator.CreateInstance(listType)!;
         listType.GetMethod("Add")!.Invoke(blocked, new[]{Box(0,220,0,100,30,100)});
         args = new object?[]{blocked,requested,player,200f,null};

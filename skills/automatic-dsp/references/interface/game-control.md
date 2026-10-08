@@ -305,6 +305,8 @@ fly 的 direction 是本行星局部方向，水平输入投影到当前位置�
 
 固态星 `navigateTo` 检查实际 Physics 碰撞体：建筑占用落点时，在周围 36 米内寻找可落地位置；近地航向与速度每 6 游戏 tick 更新，帧间维持已有原生输入；每 30 游戏 tick 复核前方短航段，保留仍安全的停靠点和可达绕行点，仅在受阻或抵达绕行点时重新寻路。到达容差不叠加为碰撞体积；进入容差并减速后锁定安全落地位置。通过结果 `localRouteChecks`、`localRouteSearches`、`maxLocalRouteMilliseconds` 核对复核次数、求路次数及最大单次耗时（毫秒）。结果 `landingPosition` 表示实际停靠点，`distanceToTarget` 对该点计算；到达要求请求容差内实际接地，或接近水面的稳定 Drift；结果保留真实 grounded 和 movementState，不把漂浮记为接地。没有空地或局部通路时返回 `landing_area_blocked` 或 `local_route_blocked`，应根据现场更换落点，不能反复重试相同任务。
 
+同星球远距离导航按球面位置间的距离区分局部落点和滚动航段，不以切平面投影长度判定目标远近。对跖附近使用前方短航段持续推进；精确对跖且切向退化时选择稳定切向，仍检查该方向的碰撞并按需局部绕行。此行为只控制通往指定落点的原生飞行输入，不改变位置或放宽碰撞约束。
+
 `moveTo` 使用本行星局部坐标。宇宙位置与速度查询 `player.uPosition` / `player.uVelocity`，坐标分量保持双精度；目标行星的 `uPosition` 随游戏时间变化。按目标类型核对上表中的完成条件。
 
 取消、超时或命令结束仅撤销本命令输入，不停速、不强制降落、不自动退出曲速。终态 result 返回真实 movementState、planetId、局部与宇宙位置、宇宙速度、warpCommand、warpState、coreEnergy 及 appliedTicks。低层固定时长飞行输入在键盘移动、曲速/加速键、原生移动订单、导航或建造接管时会中止并返回 manual_override；navigateTo 临时让出后恢复。默认输入租期为 120 秒，显式 timeoutSeconds 可覆盖。

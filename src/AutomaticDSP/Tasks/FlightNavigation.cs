@@ -84,6 +84,7 @@ namespace AutomaticDSP.Tasks
                 else if (remaining > Tolerance &&
                     (player.movementState == EMovementState.Fly || player.movementState == EMovementState.Walk) &&
                     ((previousLanding - LandingPosition).sqrMagnitude > 0.01f ||
+                        Vector3.Distance(surfacePoint, localWaypoint) > 48 ||
                         Vector3.Distance(player.position.normalized * Target.realRadius, localWaypoint) <= 3 ||
                         !LocalNavigation.CanReachWaypoint(colliders, player.position, localWaypoint, Target.realRadius)))
                 {

@@ -125,22 +125,33 @@ namespace AutomaticDSP.Tasks
         internal static bool CanReachWaypoint(List<ColliderData> colliders, Vector3 player, Vector3 waypoint, float radius)
         {
             var start = player.normalized * (radius + 15);
-            var goal = waypoint.normalized * (radius + 15);
+            return Clear(colliders, start, LocalGoal(start, waypoint), 1.5f, true);
+        }
+
+        private static Vector3 LocalGoal(Vector3 start, Vector3 destination)
+        {
+            var goal = destination.normalized * start.magnitude;
             // 只检查前方短航段；跨行星表面的长弦会穿过地面，不能代表贴地飞行路线。
-            if (Vector3.Distance(start, goal) > 48)
-                goal = (start + Vector3.ProjectOnPlane(goal - start, start.normalized).normalized * 48).normalized * (radius + 15);
-            return Clear(colliders, start, goal, 1.5f, true);
+            if (Vector3.Distance(start, goal) <= 48) return goal;
+            var up = start.normalized;
+            var forward = Vector3.ProjectOnPlane(goal - start, up);
+            // 对跖点没有唯一最短方向；使用稳定切向，避免零航段被当作可通行路线。
+            if (forward.sqrMagnitude < 0.001f)
+                forward = Vector3.Cross(up, Math.Abs(up.y) < 0.9f ? Vector3.up : Vector3.right);
+            return (start + forward.normalized * 48).normalized * start.magnitude;
         }
 
         internal static bool TryWaypoint(List<ColliderData> colliders, Vector3 player, Vector3 landing, float radius, out Vector3 waypoint)
         {
             var up = player.normalized;
-            var forward = Vector3.ProjectOnPlane(landing - player, up).normalized;
-            var right = Vector3.Cross(up, forward);
             var start = up * (radius + 15);
             var goal = landing.normalized * (radius + 15);
-            waypoint = landing;
-            if (CanReachWaypoint(colliders, player, landing, radius)) return true;
+            var partial = Vector3.Distance(start, goal) > 48;
+            var localGoal = LocalGoal(start, landing);
+            var forward = Vector3.ProjectOnPlane(localGoal - start, up).normalized;
+            var right = Vector3.Cross(up, forward);
+            waypoint = partial ? localGoal.normalized * radius : landing;
+            if (Clear(colliders, start, localGoal, 1.5f, true)) return true;
             // 局部滚动搜索，只规划近地避障；长距离航行仍使用原来的球面导航。
             const int width = 41, center = 20;
             const float step = 3;
@@ -151,9 +162,6 @@ namespace AutomaticDSP.Tasks
             var closed = new bool[points.Length];
             var estimates = new float[points.Length];
             var open = new SortedSet<Tuple<float, int>>();
-            var goalDistance = Math.Min(48, Vector3.ProjectOnPlane(landing - player, up).magnitude);
-            var partial = goalDistance >= 48;
-            var localGoal = goalDistance < 48 ? goal : (start + forward * goalDistance).normalized * (radius + 15);
             var goalIndex = -1;
             var startIndex = center + center * width;
             // 网格航段位于约 15 米高度，最长可见弦的下沉及安全余量仍高于 8 米。
