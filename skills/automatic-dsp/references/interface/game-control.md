@@ -159,6 +159,8 @@ $snapshot.task
 
 有实体目标的命令通常支持 `entityId` 或 `target: {"commandId":"之前成功的命令"}`。引用只作用于同一任务中已经成功的命令。返回多个实体时加 `entityIndex`，索引从 0 开始。
 
+`entityId` 必须是正整数，不能传 `{commandId:...}` 对象；引用字段类型错误会在入队前以 `invalid_command` 拒绝整组任务。执行期未预期异常会令命令以 `execution_error` 失败并释放通道，按任务的 `stopOnFailure` 处理后续命令，不重试或撤回已经下达的原生工作。
+
 `placeBuilding` 返回单个 `entityId`；`placeBelt` 返回带段数组 `entityIds`。传送带端点和分拣器使用自己的 `start` / `end`、`input` / `output` 对象，见 [建筑、传送带与分拣器](#建筑传送带与分拣器)。
 
 ## 等待

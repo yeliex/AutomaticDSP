@@ -17,6 +17,7 @@ static class Program
     static TaskQueueService New()
     {
         EntityReady=false;Executions=0;Seen.Clear();Complete.Clear();TaskCommandExecutor.Stops.Clear();
+        TaskCommandExecutor.ReferenceBehavior=null;TaskCommandExecutor.StopBehavior=null;ManualLogSource.Warnings.Clear();
         TaskCommandExecutor.Behavior=(c,f,n)=>{
             Executions++;Seen[c.Id]=c;
             if(c.Id.StartsWith("fail")) {f(c,CommandFailed,"test",null,n,null);return;}
@@ -73,5 +74,57 @@ static class Program
         q=New();id=Add(q,C("take","entityFastTakeOut"));q.Update();q.Cancel(id);q.Update();var count=Executions;q.Update();
         Check(Seen["take"].Status==CommandCancelled&&Executions==count&&TaskCommandExecutor.Stops.Contains("take"),"取消取料后不再调用执行器");
         Console.WriteLine("调度回归全部通过");
+        ValidateMalformedReferences();
+        ValidateExecutionExceptions();
+    }
+
+    static void ValidateMalformedReferences()
+    {
+        foreach(var type in new[]{"setStationChargePower","setStationSetting","setStationStorage","setStationVehicles"})
+        foreach(var value in new JToken[]{JObject.Parse("{commandId:'tower'}"),new JArray(1),new JValue("26145"),new JValue(1.5),new JValue(true),JValue.CreateNull(),new JValue(2147483648L)})
+        {
+            var q=New();var command=C("setting",type);command.ExtensionData=new Dictionary<string,JToken>{{"entityId",value}};
+            var rejected=false;try{Add(q,C("tower","placeBuilding"),command);}catch(TaskQueueException ex){rejected=ex.Code=="invalid_command";}
+            q.Update();
+            Check(rejected&&Executions==0&&((List<object>)q.GetActiveTasksResponse()["tasks"]).Count==0,type+" 错误实体类型整组拒绝："+value.Type);
+        }
+        foreach(var json in new[]{"{target:{entityId:{}}}","{target:{commandId:{}}}","{target:{commandId:'tower',entityIndex:[]}}","{inputCommandId:[]}","{inputEntityIndex:2147483648}"})
+        {
+            var q=New();var c=C("setting","setStationStorage");c.ExtensionData=JObject.Parse(json).Properties().ToDictionary(p=>p.Name,p=>p.Value);
+            var rejected=false;try{Add(q,C("tower","placeBuilding"),c);}catch(TaskQueueException ex){rejected=ex.Code=="invalid_command";}
+            Check(rejected,"入队拒绝非法引用："+json);
+        }
+        var validQueue=New();var valid=C("setting","noop");valid.ExtensionData=new Dictionary<string,JToken>{{"target",JObject.Parse("{commandId:'tower',entityIndex:0}")}};
+        Add(validQueue,C("tower","placeBuilding"),valid);validQueue.Update();
+        Check(Seen["setting"].Status==CommandSucceeded&&Seen["setting"].Dependencies.Contains("tower"),"正确 target 引用保留依赖");
+        validQueue=New();valid=C("setting","noop");valid.ExtensionData=new Dictionary<string,JToken>{{"entityId",26145}};Add(validQueue,valid);validQueue.Update();
+        Check(Seen["setting"].Status==CommandSucceeded,"整数实体 ID 正常执行");
+    }
+
+    static void ValidateExecutionExceptions()
+    {
+        var runningQueue=New();var runningAttempts=0;
+        TaskCommandExecutor.Behavior=(c,f,n)=>{Seen[c.Id]=c;if(++runningAttempts==2)throw new InvalidCastException("运行中异常");};
+        var runningTask=Add(runningQueue,C("running","setStationChargePower"));
+        runningQueue.Update();runningQueue.Update();runningQueue.Update();
+        Check(runningAttempts==2&&Seen["running"].Status==CommandFailed&&!Seen["running"].OwnsPlayerOrders&&
+            (string)((JsonObject)runningQueue.GetTaskResponse(runningTask)["task"])["status"]==TaskFailed,
+            "已经 RUNNING 的命令异常后进入终态，后续帧不再重试");
+        foreach(var stop in new[]{true,false})
+        foreach(var referenceFailure in new[]{true,false})
+        foreach(var cleanupFailure in new[]{true,false})
+        {
+            var q=New();var behavior=TaskCommandExecutor.Behavior;var attempts=0;
+            TaskCommandExecutor.Behavior=(c,f,n)=>{if(c.Id=="broken"){attempts++;Seen[c.Id]=c;throw new InvalidCastException("测试异常");}behavior(c,f,n);};
+            if(referenceFailure)TaskCommandExecutor.ReferenceBehavior=c=>{if(c.Id=="broken"){attempts++;Seen[c.Id]=c;throw new InvalidCastException("引用异常");}return true;};
+            if(cleanupFailure)TaskCommandExecutor.StopBehavior=c=>{if(c.Id=="broken")throw new Exception("清理异常");};
+            var task=(JsonObject)q.Enqueue(new(){StopOnFailure=stop,Commands=new(){C("tower","placeBuilding"),C("broken","setStationStorage"),C("later","noop")}})["task"];
+            Add(q,C("other","noop"));q.Update();q.Update();
+            var current=(JsonObject)q.GetTaskResponse((string)task["id"])["task"];
+            Check(attempts==1&&Seen["broken"].Status==CommandFailed&&Seen["broken"].ErrorCode=="execution_error"&&!Seen["broken"].OwnsPlayerOrders&&
+                Seen["tower"].Status==CommandSucceeded&&Seen["other"].Status==CommandSucceeded&&(Seen.ContainsKey("later")==!stop)&&(string)current["status"]==TaskFailed,
+                $"异常只执行一次且保留已建结果、释放通道：停止={stop} 引用={referenceFailure} 清理={cleanupFailure}");
+            Check(ManualLogSource.Warnings.Count==(cleanupFailure?2:1),"异常日志只记录一次，清理失败单独记录");
+        }
     }
 }

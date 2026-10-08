@@ -39,6 +39,7 @@ namespace AutomaticDSP.Tasks
 
         private static void ReadDependencies(CommandState command, List<CommandState> previous)
         {
+            ValidateEntityReferenceParameters(command);
             var ids = new List<string>(command.Request.DependsOn ?? new List<string>());
             // 现有实体引用隐含落成依赖；只允许前序命令，提交时排除环与拼写错误。
             if (command.Request.ExtensionData != null)
@@ -109,7 +110,16 @@ namespace AutomaticDSP.Tasks
                         blockedQueues.Add(queue);
                         continue;
                     }
-                    if (!commandExecutor.AreEntityReferencesReady(task, command, now)) continue;
+                    try
+                    {
+                        if (!commandExecutor.AreEntityReferencesReady(task, command, now)) continue;
+                    }
+                    catch (Exception ex)
+                    {
+                        StartTask(task, now);
+                        FailCommandException(task, command, now, ex);
+                        continue;
+                    }
                     StartTask(task, now);
                     StartCommandLocked(command, now);
                     command.OwnsPlayerOrders = UsesPlayer(command);
@@ -139,12 +149,19 @@ namespace AutomaticDSP.Tasks
 
         private void AdvanceCommandLocked(TaskState task, CommandState command, DateTimeOffset now)
         {
-            if (IsCommandTimedOut(command, now))
+            try
             {
-                commandExecutor.StopCommandEffects(command);
-                FinishCommandLocked(command, CommandFailed, "timeout", "Command timed out.", now, commandExecutor.TimeoutResult(command));
+                if (IsCommandTimedOut(command, now))
+                {
+                    commandExecutor.StopCommandEffects(command);
+                    FinishCommandLocked(command, CommandFailed, "timeout", "Command timed out.", now, commandExecutor.TimeoutResult(command));
+                }
+                else commandExecutor.Execute(task, command, now);
             }
-            else commandExecutor.Execute(task, command, now);
+            catch (Exception ex)
+            {
+                FailCommandException(task, command, now, ex);
+            }
             if (command.Status == CommandFailed) task.HadCommandFailure = true;
             if (IsTerminalCommand(command.Status))
             {
@@ -160,6 +177,26 @@ namespace AutomaticDSP.Tasks
                 command.OwnsPlayerOrders = false;
                 command.Background = true;
             }
+        }
+
+        private void FailCommandException(TaskState task, CommandState command, DateTimeOffset now, Exception exception)
+        {
+            // 异常命令必须进入终态，避免下一帧重复执行已经产生过副作用的操作。
+            task.HadCommandFailure = true;
+            try
+            {
+                commandExecutor.StopCommandEffects(command);
+            }
+            catch (Exception cleanupException)
+            {
+                log.LogWarning($"Command cleanup failed for {task.Id}/{command.Id}: {cleanupException}");
+            }
+            finally
+            {
+                command.OwnsPlayerOrders = false;
+                FinishCommandLocked(command, CommandFailed, "execution_error", exception.Message, now, command.Result);
+            }
+            log.LogWarning($"Command failed for {task.Id}/{command.Id}: {exception}");
         }
 
         private void StopTaskCommands(TaskState task, DateTimeOffset now, bool failure)
