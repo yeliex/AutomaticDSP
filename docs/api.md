@@ -1011,7 +1011,7 @@ query ObserveStorage {
 
 ## 地形改造、还原与植被移植
 
-`reformTerrain` 接收 `position`、`mode`（flatten/restore，默认 flatten）、`brushSize`（1–10，默认 1）、`brushType`（1–7，默认 1）、`brushColor`（0–31，默认 0）、`buryVeins`（默认 false）。类型 7 是无装饰地基；还原必须使用 restore。要求地基科技和足够原生材料／沙土，按吸附后的中心检查建造范围。手持其他物品时返回 `hand_item_conflict`；还原返还地基到手持槽。
+`reformTerrain` 接收 `position`、`mode`（flatten/restore，默认 flatten）、`brushSize`（1–10，默认 1）、`brushType`（1–7，默认 1）、`brushColor`（0–31，默认 0）、`buryVeins`（默认 false）。类型 7 是无装饰地基；还原必须使用 restore。要求地基科技和足够原生材料／沙土，按吸附后的中心检查建造范围。手持其他物品时返回 `hand_item_conflict`；还原返还地基到手持槽。若调用前为空手，命令结束时通过原生收起将返还地基放回背包（满包按原生规则掉落），避免临时手持选择触发建造模式；玩家原有地基选择和建造模式保持不变。
 
 `collectVegetation {vegeId}` 收取现场植被，`plantVegetation {protoId,position,rotation?}` 从收藏种植；两个 ID 分别是现场池索引与植被原型 ID。种植必须通过原生碰撞校验，普通模式消耗一个收藏，不允许生成矿脉、飞行仓或特效对象。
 

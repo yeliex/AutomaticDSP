@@ -73,6 +73,7 @@ namespace AutomaticDSP.Tasks
             var factory = player.factory;
             // 使用独立工具，避免覆盖玩家当前 UI 的笔刷设置。
             var tool = new AutomationReformTool();
+            var selectedFoundation = false;
             try
             {
                 tool._Init(GameMain.data);
@@ -116,7 +117,11 @@ namespace AutomaticDSP.Tasks
                 var before = (byte[])platform.reformData.Clone();
                 var heightBefore = factory.planet.data.QueryModifiedHeight(tool.reformCenterPoint);
                 // 还原向手持地基返还；使用原生空手选择，不创建物品，也不挪动已有地基。
-                if (mode == "restore" && player.inhandItemId == 0) player.SetHandItems(1131, 0);
+                if (mode == "restore" && player.inhandItemId == 0)
+                {
+                    selectedFoundation = true;
+                    player.SetHandItems(1131, 0);
+                }
                 player.ClearOrders();
                 player.controller.actionMine.miningType = EObjectType.None;
                 player.controller.actionMine.miningId = 0;
@@ -151,7 +156,16 @@ namespace AutomaticDSP.Tasks
                         ["changedCells"] = changed, ["nativeAreaMode"] = tool.disableOrExtra
                     });
             }
-            finally { tool._Free(); }
+            finally
+            {
+                try
+                {
+                    // 手持地基会在下一帧重新触发原生建造模式；只收起本次临时选择，保留玩家原有手持与指令。
+                    // 原生收起会将返还地基放入背包，满包时按游戏规则掉落，不能直接清空物品字段。
+                    if (selectedFoundation && player.inhandItemId == 1131) player.SetHandItems(0, 0);
+                }
+                finally { tool._Free(); }
+            }
         }
     }
 }
