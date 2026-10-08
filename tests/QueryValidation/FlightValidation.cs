@@ -184,6 +184,50 @@ static class FlightValidation
             navType.GetMethod("Plan", fields)!.Invoke(nav, new object?[]{input, nearLanding, null, false, false});
             Check((float)Get(Get(input,"Direction")!,"y")! > 0,
                 "进入捕获范围前已经朝可见目标落点调整角度");
+            var planetType = Get(target,"type")!;
+            var gasCenter = Activator.CreateInstance(game.GetType("VectorLF3",true)!,
+                -57040112.518600635d,-5908351.469411579d,-31043038.753827706d)!;
+            Set(target,"type",Enum.Parse(game.GetType("EPlanetType",true)!,"Gas"));
+            Set(target,"radius",800f); Set(target,"scale",1f);
+            Set(target,"uPosition",gasCenter);
+            Set(target,"uPositionNext",Activator.CreateInstance(game.GetType("VectorLF3",true)!,
+                -57040112.10660282d,-5908351.595946369d,-31043040.63214383d)!);
+            Set(player,"uPosition",Activator.CreateInstance(game.GetType("VectorLF3",true)!,
+                -57040496.1537631d,-5908228.564001216d,-31041209.847013604d)!);
+            Set(player,"uVelocity",Activator.CreateInstance(game.GetType("VectorLF3",true)!,24.0225d,-7.574d,-112.603d)!);
+            navType.GetMethod("Plan",fields)!.Invoke(nav,new object?[]{input,gasCenter,null,false,true});
+            var gasSpeed = (double)Get(nav,"wantedSpeed")!;
+            var gasDirection = Get(input,"Direction")!;
+            // 现场已几乎追平公转；新速度目标仍须产生明确向内的相对运动。
+            var closure = new[]{"x","y","z"}.Select(axis =>
+                ((float)Get(gasDirection,axis)! * gasSpeed - (double)Get(Get(player,"uVelocity")!,axis)!) *
+                ((double)Get(gasCenter,axis)! - (double)Get(Get(player,"uPosition")!,axis)!)).Sum();
+            Check(closure > 180000d, "气态星现场停滞状态仍请求向星心进近，预计闭合速度超过96米每秒");
+            Sail(); Check((float)Get(input,"Thrust")! == 1,
+                "气态星公转速度超过相对限速时不在捕获范围外持续制动");
+            Set(player,"uVelocity",Activator.CreateInstance(game.GetType("VectorLF3",true)!,
+                (double)(float)Get(gasDirection,"x")! * 600,
+                (double)(float)Get(gasDirection,"y")! * 600,
+                (double)(float)Get(gasDirection,"z")! * 600)!);
+            Sail(); Check((float)Get(input,"Thrust")! == -1 && !(bool)Get(input,"Boost")!,
+                "气态星过快进近仍请求原生制动，不取消减速保障");
+            Set(target,"uPosition",near); Set(target,"uPositionNext",near);
+            Set(player,"uPosition",Activator.CreateInstance(game.GetType("VectorLF3",true)!,0d,0d,0d)!);
+            Set(player,"uVelocity",Activator.CreateInstance(game.GetType("VectorLF3",true)!,100d,0d,0d)!);
+            navType.GetMethod("Plan",fields)!.Invoke(nav,new object?[]{input,near,null,false,true});
+            Check(Math.Abs((double)Get(nav,"wantedSpeed")! - 1000d) < 0.001,
+                "静止气态星保留按距地表计算的原有限速");
+            Set(target,"uPositionNext",Activator.CreateInstance(game.GetType("VectorLF3",true)!,
+                5000d,4000d / 60,0d)!);
+            navType.GetMethod("Plan",fields)!.Invoke(nav,new object?[]{input,near,null,false,true});
+            Check((double)Get(nav,"wantedSpeed")! == 2000d,
+                "气态星公转补偿后的请求航速仍受机甲原生上限约束");
+            Set(player,"warpCommand",true);
+            navType.GetMethod("Plan",fields)!.Invoke(nav,new object?[]{input,near,null,false,true});
+            Check(Math.Abs((double)Get(nav,"wantedSpeed")! - 1000d) < 0.001,
+                "气态星普通进近速度转换不介入曲速阶段");
+            Set(player,"warpCommand",false);
+            Set(target,"type",planetType); Set(target,"radius",0f); Set(target,"scale",0f);
             Set(target,"uPosition",Activator.CreateInstance(game.GetType("VectorLF3",true)!,0d,0d,20000000d)!);
             Set(mecha,"maxWarpSpeed",600000f); Set(mecha,"warpStartPowerPerSpeed",400d);
             Set(mecha,"warpKeepingPowerPerSpeed",80d); Set(mecha,"coreEnergyCap",3200000000d);

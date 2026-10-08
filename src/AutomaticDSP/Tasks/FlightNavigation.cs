@@ -262,6 +262,7 @@ namespace AutomaticDSP.Tasks
             input.Mode = "sail";
             departureDirection = Vector3.zero;
             VectorLF3 direction;
+            var approachFrameVelocity = VectorLF3.zero;
             if (local != null) guidanceClearance = 0;
             if (local != null && local != Target)
             {
@@ -294,6 +295,9 @@ namespace AutomaticDSP.Tasks
                 if (direction.sqrMagnitude < 0.001) direction = -up;
                 // 接近时逐步减速，避免高速转弯半径大于下降区而一直绕点航行。
                 wantedSpeed = landing ? 45 : Math.Min(120, Math.Max(45, arc));
+                // Sail 随高度逐渐补偿天体运动；只补上原生参考系尚未包含的部分。
+                approachFrameVelocity = Target.GetUniversalVelocityAtLocalPoint(GameMain.gameTime, player.position) *
+                    (1 - Math.Max(0, Math.Min(1, (600 - altitude) / 450)));
                 Phase = landing ? "descending" : "approachingPosition";
             }
             else
@@ -304,6 +308,12 @@ namespace AutomaticDSP.Tasks
                 var surfaceDistance = delta.magnitude - (Target == null ? 0 : Target.realRadius);
                 var lead = Math.Min(30, Math.Max(0, surfaceDistance) / Math.Max(100, relativeVelocity.magnitude));
                 direction = delta + targetVelocity * lead;
+                if (gas && !player.warping && !player.warpCommand)
+                {
+                    // 气态星的限速是相对行星的进近速度；速度目标包含公转后不再重复预测瞄准点。
+                    direction = delta;
+                    approachFrameVelocity = targetVelocity;
+                }
                 if (Target != null && !gas)
                 {
                     var landingDelta = targetWorld - player.uPosition;
@@ -356,6 +366,12 @@ namespace AutomaticDSP.Tasks
                     wantedSpeed = player.mecha.maxSailSpeed;
                     Phase = "directDescent";
                 }
+            }
+            if (gas && (local == null || local == Target) && !player.warping && !player.warpCommand)
+            {
+                // 航向和限速必须属于同一原生控制参考系，否则会在捕获范围外追平行星后停滞。
+                direction = direction.normalized * wantedSpeed + approachFrameVelocity;
+                wantedSpeed = Math.Min(player.mecha.maxSailSpeed, direction.magnitude);
             }
             input.Direction = ((Vector3)direction).normalized;
         }
