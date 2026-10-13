@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using GraphQLParser;
 using GraphQLParser.AST;
 
@@ -130,6 +131,26 @@ namespace AutomaticDSP.State
                 queryField.TimeLevel = StatisticsIntArgument(field.Arguments, "timeLevel", 0);
                 if (queryField.AstroFilter < -1 || queryField.TimeLevel < 0 || queryField.TimeLevel > 5)
                     throw new StateQueryParseException("statistics 的 astroFilter 必须为 -1、0 或有效天体 ID，timeLevel 必须为 0 到 5。");
+            }
+
+            if (name == "beltTopology")
+            {
+                queryField.EntityId = IntArgument(field.Arguments, "entityId");
+                queryField.PathId = IntArgument(field.Arguments, "pathId");
+                var hasEntity = field.Arguments?.Items.Any(a => a.Name.StringValue == "entityId") == true;
+                var hasPath = field.Arguments?.Items.Any(a => a.Name.StringValue == "pathId") == true;
+                var hasPoint = field.Arguments?.Items.Any(a => new[] { "x", "y", "z", "radius" }.Contains(a.Name.StringValue)) == true;
+                if ((hasEntity ? 1 : 0) + (hasPath ? 1 : 0) + (hasPoint ? 1 : 0) != 1 ||
+                    (hasEntity && !(queryField.EntityId > 0)) || (hasPath && !(queryField.PathId > 0)))
+                    throw new StateQueryParseException("beltTopology 需要 entityId、pathId 或 x/y/z/radius 三种入口之一。");
+                if (hasPoint)
+                {
+                    queryField.Position = new UnityEngine.Vector3(CoordinateArgument(field.Arguments, "x"),
+                        CoordinateArgument(field.Arguments, "y"), CoordinateArgument(field.Arguments, "z"));
+                    queryField.Radius = CoordinateArgument(field.Arguments, "radius");
+                    if (!(queryField.Radius > 0) || float.IsInfinity(queryField.Radius.Value * queryField.Radius.Value))
+                        throw new StateQueryParseException("radius 必须是有效正数。");
+                }
             }
 
             if (name == "surface")

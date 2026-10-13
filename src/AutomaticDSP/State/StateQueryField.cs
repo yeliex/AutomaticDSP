@@ -23,6 +23,10 @@ namespace AutomaticDSP.State
 
         public int? EntityId { get; set; }
 
+        public int? PathId { get; set; }
+
+        public float? Radius { get; set; }
+
         public int? AstroFilter { get; set; }
 
         public int? TimeLevel { get; set; }
@@ -40,6 +44,8 @@ namespace AutomaticDSP.State
                 Limit = Limit,
                 Offset = Offset,
                 EntityId = EntityId,
+                PathId = PathId,
+                Radius = Radius,
                 AstroFilter = AstroFilter,
                 TimeLevel = TimeLevel,
                 Position = Position
@@ -60,6 +66,8 @@ namespace AutomaticDSP.State
 
         public void Merge(StateQueryField other)
         {
+            if (PathId != other.PathId || Radius != other.Radius)
+                throw new StateQueryParseException("同一传送带查询不能指定不同路径或半径；请使用别名。");
             if (AstroFilter != other.AstroFilter || TimeLevel != other.TimeLevel)
                 throw new StateQueryParseException("同一统计响应字段不能指定不同范围或时间窗口；请使用别名。");
             if (!System.Nullable.Equals(Position, other.Position))

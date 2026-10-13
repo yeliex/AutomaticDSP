@@ -157,6 +157,33 @@ query Endpoints {
 
 分拣器自身的连接槽 1 对应取物来源，槽 0 对应投放目标；它们与来源、目标建筑的几何插槽编号不同。同一带段可有多个同起点分拣器，需核对两端对象、方向、对端插槽及反向连接，不能仅凭位置判断实体身份。确认断链后通过拆建恢复连接。
 
+## 传送带路径与建筑连接
+
+`factory.beltTopology` 直接读取原生 CargoPath 成员和对象连接，避免让 Agent 逐节点发请求。三种入口互斥：`entityId`（建筑、分拣器或带节点）、`pathId`（原生路径段）、`x/y/z/radius`（行星局部坐标，半径为正数）。坐标入口返回半径内所有带节点候选及其路径，不在交叉、高架处替 Agent 选择一条带。
+
+```graphql
+query {
+  factory {
+    beltTopology(entityId: 101) {
+      planetId pathCount sourceConnectionCount
+      sourceConnections(limit: 64) { entityId slot isOutput otherEntityId otherSlot viaSorterEntityId }
+      paths(limit: 64) {
+        pathId closed nodeCount connectionCount
+        inputPathIds(limit: 2048) outputPathId outputIndex
+        nodes(offset: 0, limit: 2048) { entityId beltId protoId segIndex segLength position { x y z } }
+        connections(offset: 0, limit: 2048) { entityId slot isOutput otherEntityId otherSlot otherProtoId viaSorterEntityId }
+      }
+    }
+  }
+}
+```
+
+建筑入口包含直接接带和通过一层分拣器接带的关系；路径 connections 包含沿途建筑，`viaSorterEntityId:0` 表示直接连接，`isOutput` 相对于该记录的 entityId。节点按原生 segIndex 排列，列表插入顺序不能当作输送顺序。查询不会递归穿过制造台、分流器等建筑，也不模拟物料流动。
+
+路径段不等于整个相连网络；读取 inputPathIds/outputPathId 后，按需要继续查相邻 pathId。closed 表示原生闭环。传送带改动后路径 ID 和成员可能变化，应重新查询。
+
+坐标入口示例为 `beltTopology(x:200,y:0,z:0,radius:2)`，读取 `matchCount`、`matches{entityId beltId pathId distance}` 和 paths。成员、连接、匹配列表均沿用默认 256、最大 2048 的分页规则；对照 pathCount/nodeCount/connectionCount/matchCount/sourceConnectionCount 读取完整列表，不把第一页当作全部。这里只查询已建传送带，未落成对象查询 prebuildPool。
+
 ## 普通矿机覆盖与碰撞
 
 普通矿机的覆盖在姿态的 `-forward` 一侧，不能把模型正向当作采矿方向。当前原生 `MinerComponent.IsTargetVeinInRange` 将矿脉和矿机位置归一到半径 200，以矿机位置减 `forward × 1.2` 为覆盖中心；矿脉投影到切平面后需满足距离平方不超过 60.0625、与 `-forward` 的方向点积不小于 0.73、径向差绝对值不超过 2。用实际矿脉位置与候选姿态计算覆盖，再核对碰撞和建成后的矿脉列表。矿机的主体与支脚不能压到矿脉：当前原生建造检查在建筑碰撞之外，还对矿机各个 buildCollider 检查矿脉所在的碰撞层；选址需要同时检查矿脉碰撞体，不能只读取 isForBuild:true 的建筑碰撞体。按 ColliderData.shape 处理碰撞形状；球形矿脉使用 radius，ext 为零不代表没有碰撞体。这些数值来自当前版本，版本变化时重新查证，不套用于大型采矿机。

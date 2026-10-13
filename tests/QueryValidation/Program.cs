@@ -42,6 +42,7 @@ if(markerRows.Count!=1 || (string)marker["word"]!="钛" || Convert.ToSingle(colo
 Console.WriteLine("通过：真实 Mod 查询器筛选跨行星信标，保留非空文字及真实 Unity Color 的 RGBA。");
 CraftValidation.Run(assembly);
 VectorValidation.Run(assembly);
+BeltTopologyValidation.Run(assembly);
 QueryDispatchValidation.Run(assembly);
 FlightValidation.Run(assembly);
 LocalNavigationValidation.Run(assembly);

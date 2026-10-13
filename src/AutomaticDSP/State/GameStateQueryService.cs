@@ -424,6 +424,8 @@ namespace AutomaticDSP.State
             {
                 var value = source is PlanetFactory factory && field.Name == "objectConnections"
                     ? CaptureObjectConnections(factory, field.EntityId.Value)
+                    : source is PlanetFactory beltFactory && field.Name == "beltTopology"
+                    ? CaptureBeltTopology(beltFactory, field)
                     : source is PlanetData planet && field.Name == "surface"
                     ? CaptureSurface(planet, field.Position.Value)
                     : ResolveQueryMember(source, field.Name);
@@ -746,6 +748,11 @@ namespace AutomaticDSP.State
                 {
                     ["name"] = "objectConnections", ["kind"] = "object", ["type"] = "ObjectConnections",
                     ["description"] = "只读实体端口及原生连接记录，必须指定正整数 entityId。"
+                });
+                result.Add(new JsonObject
+                {
+                    ["name"] = "beltTopology", ["kind"] = "object", ["type"] = "BeltTopology",
+                    ["description"] = "通过 entityId、pathId 或 x/y/z/radius 查询原生货运路径、带节点与建筑连接。"
                 });
             }
 
