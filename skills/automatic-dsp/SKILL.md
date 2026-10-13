@@ -11,17 +11,21 @@ Mod 提供游戏原生观测和操作，Agent 负责选址、产能计算、布�
 
 根据当前科技、产量、库存、电力和物流定位目标瓶颈。优先安排有收益的效率升级，解锁后尽快应用；保持科研与材料供应衔接，制造和科研等待期间推进独立操作。长任务定期及在科技、资源或运行状态变化时执行 [效率复核](references/guides/goal-planning.md#定期效率复核)，扩产前比较 [配方候选](references/guides/goal-planning.md#配方候选复核)。
 
-缺电时先比较当前可用的 [能源与燃料方案](references/guides/production.md#能源选择)，不默认扩风电。取料和备货优先复用现有产线与仓储，减少递归手搓，并保留持续生产所需材料。复杂产线或大规模扩产主动评估 [跨星球供应](references/guides/interplanetary.md#跨星球产线规划)，降低本地加工与布局成本。
+缺电时比较当前可用的 [能源与燃料方案](references/guides/production.md#能源选择)。取料先核对随身库存和当地供应，优先复用现有配送、物流和产线；少量且直接材料齐全时可以手搓。备货只补实际缺口，保留用户指定的专用批次，详见 [物料供应与仓储](references/guides/production.md#物料供应与仓储)。
 
-本地物流优先共用传送带汇流，液体仅在本地确需缓冲时使用储液罐；星际供应直接入物流塔，以塔内货槽缓冲，并按未来大规模需求成批超前建设。物流配送器主要服务机甲补给，不默认为每台制造台或熔炉配置箱子与配送器；所有配送器默认向机甲供应和回收，按需修改机甲物流仓库的物品与阈值来自动补给，避免手动取货。具体选择见 [物料供应与仓储](references/guides/production.md#物料供应与仓储)。
+物流布局按实际吞吐、距离、供电和供需职责选择，共用设施不能影响原线必要供应。跨星派遣与充电见 [跨星球运输](references/guides/interplanetary.md#从人工运输转为持续供应)，公共供料与设备等级见 [生产指南](references/guides/production.md)。
 
 改造前先按 [连接与吞吐](references/guides/production.md#连接与吞吐) 核对组件数组与当前配方物品顺序，再定位真实限制；完成后按相同范围和游戏时间窗口核对目标端收益。具体使用 [统计诊断流程](references/guides/production.md#基于统计优化产线)，不以理论产能或建造成功代替持续产出。
+
+蓝图施工前核对塔型、加工建筑等级和现场供应，落成后检查配置、连接与持续产出。按依赖和无人机施工条件安排后续工作，不把预建下达成功当作完工。具体见 [蓝图物流站选型](references/guides/dyson-sphere.md#蓝图物流站选型)、[蓝图加工建筑选型](references/guides/dyson-sphere.md#蓝图加工建筑选型) 和 [大型蓝图启动](references/guides/dyson-sphere.md#大型工厂蓝图启动)。已建建筑拆换见 [直接接带建筑的替换](references/guides/production.md#直接接带建筑的替换)。
 
 长任务记录目标、关键决定、已完成操作与任务 ID。恢复上下文后核对存档、任务结果和现场，再继续未完成项；结果不确定时先查询，避免重复下达。
 
 ## 执行与收尾
 
 科研、手搓、机甲指令、建造按独立通道推进。预建下达后可继续移动，建造任务在预建下达后即成功，施工进度另查 construction；跨通道依赖用 `dependsOn` 或状态条件，实体引用自动等待落成，数组顺序不保证跨通道完成顺序。
+
+大量同类建造、拆除优先使用现有命令的 `batch`，拆除也可传 `entityIds`；逐项检查结果，不以 HTTP 成功或库存增量代替移除确认。整段传送带与沿途建筑通过 [beltTopology](references/interface/prototypes-and-connections.md#传送带路径与建筑连接) 查询，不逐节点发请求；连锁拆除使用原生 chainReaction，先确认范围。取消蓝图或普通施工使用 [cancelPrebuild](references/interface/game-control.md#取消已下达的施工与蓝图)，优先引用本会话源建造命令；取消任务本身不会撤回预建。
 
 铺带前按路径方向查询 `localPlanet.surface` 的 `modifiedHeight`，结合原生地面／水面带基准 `realRadius + 0.2` 指定高度，不能直接把行星半径当作带段半径。连接已有带段须核对实际端点高度；`belt_below_surface` 时按失败坐标和高度重新规划，Mod 不自动抬升。采样、容差及错误字段见 [传送带契约](references/interface/game-control.md#建筑传送带与分拣器)。
 

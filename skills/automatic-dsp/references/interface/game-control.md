@@ -305,7 +305,7 @@ HTTP 层错误常用 `{"error":{"code":"...","message":"..."}}`；执行失败�
 
 fly 的 direction 是本行星局部方向，水平输入投影到当前位置切平面，lift 为升降输入；sail 的 direction 是宇宙方向单位向量，thrust=1 转向该方向，-1 执行原生制动，0 松开推进键（中间值仍受原生输入阈值控制），boost 对应航行加速键。它们都不是目标位置。fly 持续上升并水平移动可以在原生推进器等级满足时进入 Sail；sail 接近地表后的模式转换仍由原生处理。进入 Fly 后再调用 land。
 
-固态星 `navigateTo` 检查实际 Physics 碰撞体：建筑占用落点时，在周围 36 米内寻找可落地位置；近地航向与速度每 6 游戏 tick 更新，帧间维持已有原生输入；每 30 游戏 tick 复核前方短航段，保留仍安全的停靠点和可达绕行点，仅在受阻或抵达绕行点时重新寻路。到达容差不叠加为碰撞体积；进入容差并减速后锁定安全落地位置。通过结果 `localRouteChecks`、`localRouteSearches`、`maxLocalRouteMilliseconds` 核对复核次数、求路次数及最大单次耗时（毫秒）。结果 `landingPosition` 表示实际停靠点，`distanceToTarget` 对该点计算；到达要求请求容差内实际接地，或接近水面的稳定 Drift；结果保留真实 grounded 和 movementState，不把漂浮记为接地。没有空地或局部通路时返回 `landing_area_blocked` 或 `local_route_blocked`，应根据现场更换落点，不能反复重试相同任务。
+固态星 `navigateTo` 检查实际 Physics 碰撞体：建筑占用落点时，在周围 36 米内寻找可落地位置；近地航向与速度每 6 游戏 tick 更新，帧间维持已有原生输入；每 30 游戏 tick 复核前方短航段，无障碍时前移中间航点，避免逐段停车；受阻时保留可达绕行点，待其受阻或抵达后重新寻路。到达容差不叠加为碰撞体积；进入容差并减速后锁定安全落地位置。通过结果 `localRouteChecks`、`localRouteSearches`、`maxLocalRouteMilliseconds` 核对复核次数、求路次数及最大单次耗时（毫秒）。结果 `landingPosition` 表示实际停靠点，`distanceToTarget` 对该点计算；到达要求请求容差内实际接地，或接近水面的稳定 Drift；结果保留真实 grounded 和 movementState，不把漂浮记为接地。没有空地或局部通路时返回 `landing_area_blocked` 或 `local_route_blocked`，应根据现场更换落点，不能反复重试相同任务。
 
 同星球远距离导航按球面位置间的距离区分局部落点和滚动航段，不以切平面投影长度判定目标远近。对跖附近使用前方短航段持续推进；精确对跖且切向退化时选择稳定切向，仍检查该方向的碰撞并按需局部绕行。此行为只控制通往指定落点的原生飞行输入，不改变位置或放宽碰撞约束。
 
@@ -377,7 +377,7 @@ fly 的 direction 是本行星局部方向，水平输入投影到当前位置�
 | `placeBuilding` | `itemId`、`position: {x,y,z}`；可选 `rotation`（球面朝向的角度）、`veinId`（矿机目标），以及 `recipeId`、`filterId` |
 | `placeBelt` | `itemId` 和 `points` 点列（至少两个点）；或 `startPosition` / `endPosition`；也可用 `start` / `end` 端点对象 |
 | `placeSorter` | `itemId`、`input` 来源端点、`output` 去向端点；可选 `filterItemId` 在建造时筛选物品，0 或省略为不筛选 |
-| `dismantleEntity` | 实体目标；使用正的已建实体 ID |
+| `dismantleEntity` | 实体目标，或 `entityIds` 正整数数组；`chainReaction:true` 启用原生传送带连锁拆除；也可用 `prebuildId` 移除未落成预建 |
 | `reverseBelt` | 实体目标；反转所属整条原生运输路径，所选带段须在建造范围内 |
 | `setStorageLimit` | 储物仓实体目标、`maxSlots`（0 到实际 size），限制自动化可用格数 |
 | `setSorterFilter` | 分拣器实体目标、物品 `itemId`；0 清除过滤 |
@@ -386,7 +386,40 @@ fly 的 direction 是本行星局部方向，水平输入投影到当前位置�
 | `setStationChargePower` | 普通运输站实体目标、整数 `powerMW`，按原生 3 MW 刻度与建筑原型允许范围设置充电上限；不改变储能和电网实际供电 |
 | `setSplitterPriority` | 四向分流器实体目标、端口 `slot`（0–3）、布尔值 `priority` |
 | `upgradeEntity` | 实体目标、目标等级物品 `itemId`；在机甲建造范围内原地升级 |
-| `cancelPrebuild` | 正整数 `prebuildId`；可选当前 `planetId` | 在建造范围内调用原生预建拆除和退款；需先取消等待该预建的 Mod 任务，刷新 `factory.prebuildPool` 后提交 |
+| `cancelPrebuild` | `prebuildId` 或 `prebuildIds`；也可用 `sourceTaskId`、`sourceCommandId` 引用本会话建造命令，可选当前 `planetId`。在建造范围内原生移除未落成预建，已落成建筑保留 |
+
+### 同步批量建造与拆除
+
+`placeBuilding`、`placeBelt`、`placeSorter`、`applyFactoryBlueprint`、`dismantleEntity`、`cancelPrebuild` 支持 `batch` 参数对象数组。每项继承命令顶层的公共参数，同名参数由该项覆盖；不允许嵌套 batch 或在子项设置 type、id、dependsOn、timeoutSeconds。不同命令类型仍使用 `commands` 数组。
+
+```json
+{"commands":[
+  {"id":"电塔","type":"placeBuilding","itemId":2201,"batch":[{"position":{"x":200,"y":0,"z":0}},{"position":{"x":199.5,"y":10,"z":0}}]},
+  {"id":"拆旧设备","type":"dismantleEntity","entityIds":[101,102],"stopOnFailure":false}
+]}
+```
+
+坐标和 ID 只是结构示例，必须替换为现场选择。批量按数组顺序复用单项原生校验；没有时间预算或主动分帧。需要原生靠近、或等待被引用的建筑落成时，保留当前子项并等待。施工等待归还机甲通道，恢复执行重新排队且不重置超时；原生靠近期间仍独占通道。建造仍以预建下达为完成条件。`stopOnFailure` 默认继承任务设置；false 表示继续处理后续子项，但有失败时父命令仍为 FAILED。批量不是事务，已执行的操作不回滚。
+
+结果包括 `count`、`processedCount`、`succeededCount`、`failedCount`、按输入下标对应的 `results[{index,status,errorCode,errorMessage,result}]`。剩余未执行子项标为 SKIPPED；父命令只写一条历史。批量建造额外返回展平后的 `objectIds`、`prebuildIds`、`entityIds`，后续实体引用的 `entityIndex` 对应展平后的建造目标。
+
+单次拆除返回 `removed`、`selectedCount`、`removedCount` 和逐对象 `results`，其中 `nativeSucceeded` 表示原生调用结果，`removed:true` 同时要求对象槽位已清除。拆除不再扫描库存，不返回 `returnedItems`、`returnedCount`；用移除结果判断拆除成功，物品去向另查库存与 trash。
+
+`chainReaction:true` 复用原生传送带连锁目标扩展，受机甲建造范围、带速及原生路径段边界限制，并可能包含原生连带拆除的分拣器。不要把它理解为跨范围拆除整个运输网络；先用 [传送带拓扑](prototypes-and-connections.md#传送带路径与建筑连接) 定位目标。批量中避免重复指定同一连锁范围内的节点。
+
+### 取消已下达的施工与蓝图
+
+取消 Mod 任务只停止后续指令，不撤回已下达的施工。移除尚未落成的普通建筑、传送带、分拣器或蓝图预建，使用 `cancelPrebuild`：
+
+```json
+{"commands":[{"type":"cancelPrebuild","sourceTaskId":"task:123","sourceCommandId":"工厂蓝图","stopOnFailure":false}]}
+```
+
+源命令必须已结束；省略 sourceTaskId 表示当前任务。该方式仅处理源命令新创建的预建，原有建筑、复用或升级对象不进入取消列表；不撤销地基改造。已落成或已被移除的预建返回 `removed:false,state:"not_pending"`，不等待落成，也不改为拆除已建实体。预建移除事件用于阻止 ID 复用后误删新对象；跨读档会话的源引用返回 `source_session_changed`。
+
+取消范围仍受原生距离限制；移到范围内后可以重新提交源引用，已取消目标会跳过。若之前的任务还占用机甲通道或等待这些预建，先取消该任务再提交施工取消。源建造失败时，应在新任务中引用它，避免旧任务的遇错停止规则跳过取消指令。
+
+也可刷新 `factory.prebuildPool` 后提交 `prebuildIds:[1,2,3]`。`skipMissing:true` 跳过已不存在的预建；可逐项提供 `expectedItemId` 和 `expectedPosition` 校验快照，变化返回 `target_changed`。直接使用 ID 不带旧命令的生命周期保护，不能跨读档或长时间沿用旧 ID。成功移除返回 `removed:true`，并核对原生返回值和预建槽位；材料返还与溢出仍由游戏处理。
 
 传送带和分拣器分别使用专用命令。建筑位置按原生网格或矿机规则调整，旋转参数为球面朝向角；建成后读取实际位置。
 
@@ -502,6 +535,8 @@ Agent 提供路径；`startPosition` / `endPosition` 使用原生线段吸附，
 ## 配送器、物流背包与指定转移
 
 以下设置和转移走 instruction 通道，不等待手搓或科研；建筑目标仍须在当前星球和建造范围内。物流背包开关只控制自动配送，关闭后仍可手动转移。
+
+`transferInventoryItem`、`setDeliverySlot`、`setDeliveryEnabled` 只要求玩家及随身库存就绪，支持无本地行星的太空航行；物流科技、活动格位、物品及容量限制仍然适用。玩家或库存不可用时返回 `game_not_ready`。
 
 配置物流格前查询 `player.deliveryPackage { activeCount _pos2index(limit:100) _index2pos(limit:100) }`：`index` 是 `grids` 的原始索引，不是界面可见格序号。使用 `_pos2index` 中非负的值，或核对 `_index2pos[index] >= 0`；不能假定解锁后第 0 格可用。Mod 按原生 `IsGridActive(index)` 校验。
 

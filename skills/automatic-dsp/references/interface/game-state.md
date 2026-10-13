@@ -79,6 +79,8 @@ HTTP 200 返回 `data`，结构对应请求的字段或别名；同时固定附�
 
 科技摘要 `techs` 同时提供 `preTechs`、`preTechsImplicit` 与 `preTechsMax`；材料充足不代表可入队，需检查显式、隐含前置与原生 canEnqueue。不要使用元数据买断代替正常研究。
 
+`techs.unlockFunctions` 与 `unlockValues` 按索引对应原生效果编号和值。升级完成还应核对 `history.techStates { key value { unlocked curLevel maxLevel } }` 及受影响组件；有限升级不能仅凭 `unlocked` 判断全部等级完成。集装爪还需核对 `history.inserterStackOutput` 与原生 `factory.factorySystem.inserterPool.stackOutput`，不能仅凭建筑型号推算堆叠吞吐。
+
 通过原始行星对象查询 `resources`，例如：
 
 ```graphql
@@ -205,7 +207,7 @@ query Discover {
 }
 ```
 
-配送器 storageId 指向当前顶层箱子，叠箱后会变；下层库存与输送由原生处理。filter 为负数表示全部回收。配送角范围直接读取当前 history 生效值；无需为查询而研究扩展科技。物流背包自动补货/回收阈值与格内实际库存分开，普通背包满也不代表物流格已满。拆除 returnedItems 统计普通背包、物流背包、手中三者净增量；垃圾另查顶层 trash。
+配送器 storageId 指向当前顶层箱子，叠箱后会变；下层库存与输送由原生处理。filter 为负数表示全部回收。配送角范围直接读取当前 history 生效值；无需为查询而研究扩展科技。物流背包自动补货/回收阈值与格内实际库存分开，普通背包满也不代表物流格已满。拆除用 removed 和逐目标结果确认，不再返回库存差量；物品去向查询随身库存与顶层 trash。
 
 | 根 | 当前返回 |
 | --- | --- |

@@ -607,9 +607,11 @@ query ObserveStorage {
 
 `navigateTo` 运行期间每 60 游戏 tick 刷新命令 `result`，包含 `appliedTicks`、`distanceToTarget`、`navigationPhase`、`warpStatus` 和真实飞行状态。`inputReleased:false` 表示输入仍持有，终态释放后为 true；`manual_override` 附带 `overrideReason` 指出接管来源。导航独占机甲通道，后续移动与建造下达等待；原生动作数组重建后自动恢复本命令输入，其他飞行输入占用则报 `flight_input_conflict`。导航仅在剩余距离至少 0.5 AU（20000 米）时检查原生曲速启动条件；退出距离参考运输船，为当前实际曲速 × 0.0449 + 5000 米 + 普通最高航速 × 0.25，且不小于到达容差。启动还须超出按当前天体衰减估算的满曲速退出距离，并额外留一秒普通航程；不记录历史末段范围，意外退出或越过目标后按当前距离、航向及能量重新判断。行星目标的距离按距地表计算，太空目标按距目标点计算；低能退出后，远程导航在完全退出至少 60 游戏 tick 且核心满足剩余航程估算电量后（计入启动、维持及近天体衰减，长程分段等待上限为容量 90%）重新检查并启动曲速，近程改用普通航行。人工输入或原生订单期间 navigateTo 临时让出输入（navigationPhase:manualOverride），输入释放及订单结束后从实际位置恢复导航，保留原超时；永久停止须取消任务。低层飞行命令仍以 manual_override 终止。固态星巡航对准后持续请求原生最大加速，提前朝可见落点修正航向，保持高速进入地表；太空点及气态星保留主动制动余量。远程回充阶段暂停额外加速，优先蓄电恢复翘曲。
 
-固态星 `navigateTo` 使用行星实际 Physics 碰撞体检查停靠和近地航段。指定点被建筑占用时，在其周围 36 米内搜索可落地位置；近地航向与速度每 6 游戏 tick 更新并在帧间复用输入；每 30 游戏 tick 检查前方短航段，保留安全停靠点和可达绕行点，仅在受阻或抵达绕行点时重新寻路。进入到达容差并减速后，锁定当前位置的安全落地柱，不继续追逐中心。结果 `localRouteChecks`、`localRouteSearches`、`maxLocalRouteMilliseconds` 分别记录路线复核次数、重新求路次数和单次复核最大耗时（毫秒）。结果 `landingPosition` 为实际停靠目标，`distanceToTarget` 相对于该点计算，容差仍按请求值执行。无可用停靠点或局部路径时分别返回 `landing_area_blocked`、`local_route_blocked`，不会通过穿越建筑或直接修改位置完成。
+固态星 `navigateTo` 使用行星实际 Physics 碰撞体检查停靠和近地航段。指定点被建筑占用时，在其周围 36 米内搜索可落地位置；近地航向与速度每 6 游戏 tick 更新并在帧间复用输入；每 30 游戏 tick 检查前方短航段，无障碍时前移中间航点，避免逐段停车；受阻时保留可达绕行点，待其受阻或抵达后重新寻路。进入到达容差并减速后，锁定当前位置的安全落地柱，不继续追逐中心。结果 `localRouteChecks`、`localRouteSearches`、`maxLocalRouteMilliseconds` 分别记录路线复核次数、重新求路次数和单次复核最大耗时（毫秒）。结果 `landingPosition` 为实际停靠目标，`distanceToTarget` 相对于该点计算，容差仍按请求值执行。无可用停靠点或局部路径时分别返回 `landing_area_blocked`、`local_route_blocked`，不会通过穿越建筑或直接修改位置完成。
 
 气态星普通进近的限速以行星为参考：捕获前将公转速度加入速度目标，捕获后只补偿原生 Sail 尚未包含的天体运动分量，并同步转换航向和限速。仍通过原生推进、制动及加速输入执行，保留机甲航速上限和制动能量储备；进入指定点附近后下降，低于原生 48 米阈值切换 Fly，只有在目标容差内、离地不高于 30 米且速度不超过 5 米/秒的 Fly 状态才完成。
+
+固态星的 Fly 航段使用实际飞行高度检查碰撞，Walk 起飞和 Sail 切入 Fly 后重新规划。水平受阻时，只有升降柱及高处航段均可通行才选择 45 米航高；`adjustingAltitude` 阶段先制动横移并通过原生升降输入调整高度，随后维持该航高继续飞行。落地仍要求安全落地柱；人工接管后丢弃旧航高并从实际位置恢复规划。
 
 第一版命令类型：
 
@@ -629,7 +631,7 @@ query ObserveStorage {
 - `craftInventory`
 - `transferStationItem`：在当前星球建造范围内，按数量手动取放普通运输站、大矿机或轨道采集器货槽中的已配置物品；使用原生库存操作并保留增产点数。采集器手动存入容量使用本地物流科技加成，货槽 max 仅控制物流阈值，不限制手动存入。
 - `removeForgeTask`：当前制造队列 `index` 和 `recipeId`，调用原生取消及材料退款。
-- `cancelPrebuild`：当前行星正整数 `prebuildId`，在建造范围内原生拆除未建成的预建；走普通队列。
+- `cancelPrebuild`：当前行星 `prebuildId`、`prebuildIds` 或本会话的 `sourceTaskId/sourceCommandId` 建造引用，在建造范围内原生移除未落成预建；走普通队列。源引用跳过已落成、已移除及复用对象，不撤销地基。
 - `dismissNotice`：按 `noticeId` 确认信息提示，并关闭仍可见的对应窗口。
 - `researchTech`
 - `buyoutTech`
@@ -687,6 +689,8 @@ query ObserveStorage {
 
 `autoReplenishMechaFuel` 用于把背包中的可用燃料补充到机甲燃烧室。它调用游戏原生 `Mecha.AutoReplenishFuelAll()`，因此哪些物品可以放入燃烧室由游戏内部逻辑决定，外部 Agent 不需要传入燃料配方或燃料类型。
 
+`transferInventoryItem` 支持在太空中将物品在普通背包、物流背包与手中互转；`setDeliverySlot` 和 `setDeliveryEnabled` 同样不要求本地行星。三者要求玩家及随身库存就绪，否则返回 `game_not_ready`；科技、活动格位、容量与物品守恒规则不变，详见 [物流背包契约](../skills/automatic-dsp/references/interface/game-control.md#配送器物流背包与指定转移)。
+
 `autoReplenishMechaWarper` 需解锁机甲曲速飞行，调用原生 `Mecha.AutoReplenishWarper()`，从普通背包向机甲翘曲仓补充最多 20 个真实翘曲器，并按原生容量返还未装入物品。结果为 `movedCount`、`warperCount`、`packageCount`。翘曲仓已有物品时允许零转移成功；两处均为空返回 `missing_warper`。该命令不改变自动补充开关。
 
 ```json
@@ -729,7 +733,7 @@ query ObserveStorage {
 
 目标实体支持 `entityId`、`target.entityId` 或 `target.commandId`，引用规则与 `entityFastFillIn` 相同。默认 `toPackage = true`，即取到背包；目标超过命令下发半径时返回 `out_of_range`。成功结果包含 `method`、`entityId`、`full`、`movedItems` 和实体摘要；如果没有任何物品被原生方法转移，返回 `FAILED`，`errorCode` 为 `no_item_transferred`。
 
-`dismantleEntity` 用于拆除当前行星实体，并通过游戏原生 `PlayerAction_Build.DoDismantleObject(entityId)` 回收建筑物品和实体内部物品。它支持 `entityId`、`target.entityId` 或 `target.commandId`；如果引用 `placeBelt` 等返回 `entityIds` 的命令，可同时传 `target.entityIndex` 选择某个实体。命令只处理已经建成的正实体 ID，不处理预建 ID：
+`dismantleEntity` 用于拆除当前行星实体，并通过游戏原生 `PlayerAction_Build.DoDismantleObject(entityId)` 回收建筑物品和实体内部物品。它支持 `entityId`、`target.entityId` 或 `target.commandId`；如果引用 `placeBelt` 等返回 `entityIds` 的命令，可同时传 `target.entityIndex` 选择某个实体。批量使用 `entityIds`；`chainReaction:true` 启用原生传送带连锁目标扩展，保留范围、带速、路径段及附属对象规则。也可通过正整数 `prebuildId` 调用预建取消，不向 entityId 传负数：
 
 ```json
 {
@@ -749,7 +753,11 @@ query ObserveStorage {
 }
 ```
 
-成功结果包含 `entityId`、`protoId`、`protoName`、`position`、`returnedItems` 和 `returnedCount`。如果实体不存在返回 `target_not_found`；目标超出命令下发半径时返回 `out_of_range`。
+成功结果包含 `entityId`、`protoId`、`protoName`、`position`、`removed`、`selectedCount`、`removedCount` 和逐对象 `results`。`removed:true` 同时要求原生调用成功和目标槽位清除；不再扫描库存或返回 `returnedItems/returnedCount`。如果实体不存在返回 `target_not_found`；目标超出命令下发半径时返回 `out_of_range`。
+
+`placeBuilding/placeBelt/placeSorter/applyFactoryBlueprint/dismantleEntity/cancelPrebuild` 均支持 `batch` 参数对象数组，继承顶层公共参数并逐项覆盖。同步按序执行，原生移动或实体落成等待除外；施工等待归还机甲通道，恢复执行重新排队且不重置超时。没有分帧预算或回滚。父命令一次写入历史，返回逐项状态；`stopOnFailure` 默认继承任务设置。参数、结果及取消已下达蓝图的示例见 [批量与施工取消契约](../skills/automatic-dsp/references/interface/game-control.md#同步批量建造与拆除)。
+
+查询整段传送带及连接建筑使用 `factory.beltTopology(entityId:...)`、`beltTopology(pathId:...)` 或 `beltTopology(x:...,y:...,z:...,radius:...)`，入口互斥。返回原生路径段、节点、相邻路径及直接/经分拣器连接的建筑；列表支持分页并有总数。详见 [传送带路径与建筑连接](../skills/automatic-dsp/references/interface/prototypes-and-connections.md#传送带路径与建筑连接)。
 
 `craftInventory` 推荐由外部传入目标物品，而不是配方：
 
@@ -768,6 +776,8 @@ query ObserveStorage {
 材料不足时命令返回 `FAILED`，`errorCode` 为 `missing_item`，`result` 会包含 `ingredients`、`products` 和递归汇总后的 `missing` 列表。配方未解锁时返回 `recipe_locked`。`waitForCompletion` 默认 false；true 时后台等待本次原生制造任务完成，false 时原生入队后即返回 `SUCCEEDED`，结果为 `action: enqueued, completed: false`。LLM 应优先入队并并行处理无依赖工作，仅在需要产物时等待。原生任务未完成就被移除时返回 `craft_interrupted`。
 
 `researchTech` 用于按当前存档的正常流程推进科技。它只对齐游戏原生 `GameHistoryData.EnqueueTech()`：可入队时加入科技队列，并按 `waitForUnlock` 决定是否等待游戏内机甲实验室或研究站上传 hash 后解锁。它不会调用 `BuyoutTech()`，也不会使用跨存档结转的 `PropertySystem` 元数据。
+
+原生 3306 晚于集装分拣器改良完成时，会把输出堆叠覆盖为 1。Mod 在运行中的对局检查这项兼容问题：仅从已完成的 3311／3313／3315 原型取最高输出效果，必要时调用原生 `UnlockTechFunction(39, value, level)` 恢复并同步已有分拣器。不修改科技状态、hash、队列或奖励，不增加未完成科技的效果，不降低已有更高效果，也不重放整项科技。此检查独立于科研任务是否等待完成。科技摘要的 `unlockValues` 与 `unlockFunctions` 按索引对应，保留原生值。
 
 ```json
 {
