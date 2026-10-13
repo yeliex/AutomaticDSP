@@ -34,6 +34,7 @@ namespace AutomaticDSP.Tasks
         private double wantedSpeed;
         internal Vector3 LandingPosition;
         private Vector3 localWaypoint;
+        private float localFlightAltitude;
         private long nextLocalRouteTick;
         private bool landing;
         internal int LocalRouteChecks;
@@ -59,7 +60,8 @@ namespace AutomaticDSP.Tasks
             var local = GameMain.localPlanet;
             var onTarget = Target != null && player.planetId == Target.id;
             var gas = Target != null && Target.type == EPlanetType.Gas;
-            if (onTarget && !gas && !landing && local?.physics != null && tick >= nextLocalRouteTick)
+            if (onTarget && !gas && !landing && local?.physics != null &&
+                (tick >= nextLocalRouteTick || plannedMovement != player.movementState))
             {
                 var routeStarted = Stopwatch.GetTimestamp();
                 LocalRouteChecks++;
@@ -81,15 +83,12 @@ namespace AutomaticDSP.Tasks
                     localWaypoint = surfacePoint;
                     landing = true;
                 }
-                else if (remaining > Tolerance &&
-                    (player.movementState == EMovementState.Fly || player.movementState == EMovementState.Walk) &&
-                    ((previousLanding - LandingPosition).sqrMagnitude > 0.01f ||
-                        Vector3.Distance(surfacePoint, localWaypoint) > 48 ||
-                        Vector3.Distance(player.position.normalized * Target.realRadius, localWaypoint) <= 3 ||
-                        !LocalNavigation.CanReachWaypoint(colliders, player.position, localWaypoint, Target.realRadius)))
+                else if (player.movementState == EMovementState.Fly)
                 {
-                    LocalRouteSearches++;
-                    if (!LocalNavigation.TryWaypoint(colliders, player.position, LandingPosition, Target.realRadius, out localWaypoint))
+                    if (plannedMovement != EMovementState.Fly) localFlightAltitude = 0;
+                    if ((previousLanding - LandingPosition).sqrMagnitude > 0.01f) localWaypoint = LandingPosition;
+                    if (!LocalNavigation.TryFlightWaypoint(colliders, player.position, LandingPosition, Target.realRadius,
+                        ref localFlightAltitude, ref localWaypoint, ref LocalRouteSearches))
                     { input.Error = "local_route_blocked"; return; }
                 }
                 MaxLocalRouteMilliseconds = Math.Max(MaxLocalRouteMilliseconds,
@@ -184,6 +183,7 @@ namespace AutomaticDSP.Tasks
             departureDirection = Vector3.zero;
             landing = false;
             localWaypoint = LandingPosition;
+            localFlightAltitude = 0;
         }
 
         private void Plan(FlightInput input, VectorLF3 targetWorld, PlanetData local, bool onTarget, bool gas)
@@ -227,7 +227,7 @@ namespace AutomaticDSP.Tasks
                     return;
                 }
                 input.Mode = "fly";
-                input.Direction = onTarget ? (Distance <= Tolerance ? LandingPosition : localWaypoint) - player.position :
+                input.Direction = onTarget ? localWaypoint - player.position :
                     (Vector3)Maths.QInvRotateLF(local.runtimeRotation, targetWorld - player.uPosition);
                 if (onTarget)
                 {
@@ -250,6 +250,17 @@ namespace AutomaticDSP.Tasks
                 }
                 if (!onTarget) input.Thrust = 1;
                 input.Lift = onTarget ? (gas && player.position.magnitude - Target.realRadius > 25 ? -1 : 0) : 1;
+                if (onTarget && !gas && localFlightAltitude > 0)
+                {
+                    input.Lift = LocalFlightLift(localFlightAltitude, player.controller.actionFly.targetAltitude);
+                    if (Math.Abs(player.position.magnitude - Target.realRadius - localFlightAltitude) > 1)
+                    {
+                        SetLocalFlightInput(input, Vector3.zero,
+                            Vector3.ProjectOnPlane(player.controller.velocity, player.position.normalized), player.mecha.walkSpeed * 2.5f);
+                        Phase = "adjustingAltitude";
+                        return;
+                    }
+                }
                 Phase = onTarget ? "approachingPosition" : "ascending";
                 return;
             }
@@ -374,6 +385,14 @@ namespace AutomaticDSP.Tasks
                 wantedSpeed = Math.Min(player.mecha.maxSailSpeed, direction.magnitude);
             }
             input.Direction = ((Vector3)direction).normalized;
+        }
+
+        internal static float LocalFlightLift(float altitude, float targetAltitude)
+        {
+            // 原生松开升降会自动回落至 15 米；用小幅升降输入维持已验证的航高。
+            var error = altitude - targetAltitude;
+            var lift = Mathf.Clamp(error * 0.5f, -1, 1);
+            return Math.Abs(lift) < 0.01f ? (error >= 0 ? 0.01f : -0.01f) : lift;
         }
 
         internal static void SetLocalFlightInput(FlightInput input, Vector3 offset, Vector3 velocity, float speedLimit)

@@ -124,8 +124,40 @@ namespace AutomaticDSP.Tasks
 
         internal static bool CanReachWaypoint(List<ColliderData> colliders, Vector3 player, Vector3 waypoint, float radius)
         {
-            var start = player.normalized * (radius + 15);
+            var start = player.normalized * Math.Max(radius + 15, player.magnitude);
             return Clear(colliders, start, LocalGoal(start, waypoint), 1.5f, true);
+        }
+
+        internal static bool TryFlightWaypoint(List<ColliderData> colliders, Vector3 player, Vector3 landing,
+            float radius, ref float altitude, ref Vector3 waypoint, ref int searches)
+        {
+            // 起飞和 Sail 切入后从真实高度建立航段，不能把空中起点投进建筑内部。
+            if (altitude == 0) altitude = Mathf.Clamp(player.magnitude - radius, 15, 49);
+            var start = player.normalized * (radius + altitude);
+            if (Clear(colliders, player, start, 1.5f, true))
+            {
+                if (!ShouldRefreshWaypoint(colliders, start, landing, waypoint, radius)) return true;
+                searches++;
+                if (TryWaypoint(colliders, start, landing, radius, out waypoint)) return true;
+            }
+            // 仅当整个升降柱及高处航段可通行时换高度；输入控制先升降，再横移。
+            start = player.normalized * (radius + 45);
+            if (altitude == 45 || !Clear(colliders, player, start, 1.5f, true)) return false;
+            searches++;
+            if (!TryWaypoint(colliders, start, landing, radius, out waypoint)) return false;
+            altitude = 45;
+            return true;
+        }
+
+        internal static bool ShouldRefreshWaypoint(List<ColliderData> colliders, Vector3 player, Vector3 landing,
+            Vector3 waypoint, float radius)
+        {
+            var distance = Vector3.Distance(player.normalized * radius, waypoint);
+            // 无障碍的滚动航段持续前移，不能把每个中间点当作停车落点。
+            // 受阻时仍保留绕行点，避免提前转弯切穿建筑。
+            return distance > 48 || distance <= 3 ||
+                ((waypoint - landing).sqrMagnitude > 0.01f && CanReachWaypoint(colliders, player, landing, radius)) ||
+                !CanReachWaypoint(colliders, player, waypoint, radius);
         }
 
         private static Vector3 LocalGoal(Vector3 start, Vector3 destination)
@@ -144,8 +176,8 @@ namespace AutomaticDSP.Tasks
         internal static bool TryWaypoint(List<ColliderData> colliders, Vector3 player, Vector3 landing, float radius, out Vector3 waypoint)
         {
             var up = player.normalized;
-            var start = up * (radius + 15);
-            var goal = landing.normalized * (radius + 15);
+            var start = up * Math.Max(radius + 15, player.magnitude);
+            var goal = landing.normalized * start.magnitude;
             var partial = Vector3.Distance(start, goal) > 48;
             var localGoal = LocalGoal(start, landing);
             var forward = Vector3.ProjectOnPlane(localGoal - start, up).normalized;
@@ -164,7 +196,7 @@ namespace AutomaticDSP.Tasks
             var open = new SortedSet<Tuple<float, int>>();
             var goalIndex = -1;
             var startIndex = center + center * width;
-            // 网格航段位于约 15 米高度，最长可见弦的下沉及安全余量仍高于 8 米。
+            // 网格航段不低于 15 米，最长可见弦的下沉及安全余量仍高于 8 米。
             // 地面矮建筑保留给落地检查，不参与空中网格的逐点碰撞检查。
             var nearby = colliders.FindAll(c => c.pos.magnitude + c.ext.magnitude + c.radius >= radius + 8 &&
                 (c.pos - start).magnitude <= 100 + c.ext.magnitude + c.radius);
@@ -172,7 +204,7 @@ namespace AutomaticDSP.Tasks
                 for (var x = 0; x < width; x++)
                 {
                     var index = x + y * width;
-                    points[index] = (start + right * ((x - center) * step) + forward * ((y - center) * step)).normalized * (radius + 15);
+                    points[index] = (start + right * ((x - center) * step) + forward * ((y - center) * step)).normalized * start.magnitude;
                     costs[index] = float.PositiveInfinity;
                     parents[index] = -1;
                 }

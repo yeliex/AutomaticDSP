@@ -132,12 +132,14 @@ static class FlightValidation
         Set(nav,"nextWarpTick",360L);
         Set(player,"warpCommand",false); Set(player,"warpState",0f);
         Set(nav,"nextGuidanceTick",999L);
+        Set(nav,"localFlightAltitude",45f);
         Set(nav,"LandingPosition",vector);
         Set(nav,"localWaypoint",Activator.CreateInstance(unity.GetType("UnityEngine.Vector3",true)!, -1f,0f,0f)!);
         navType.GetMethod("YieldToPlayer",fields)!.Invoke(nav,null);
         Check((string?)Get(nav,"Phase")=="manualOverride" && (long)Get(nav,"nextGuidanceTick")! == 0,
             "临时人工接管保留目的地并使下一次导航重新规划");
         Check(Equals(Get(nav,"localWaypoint"),Get(nav,"LandingPosition")), "人工移动后不返回已过时的绕行点");
+        Check((float)Get(nav,"localFlightAltitude")! == 0, "人工接管后丢弃旧航高，恢复时从实际位置重建");
         var dataField = game.GetType("GameMain", true)!.GetField("data")!;
         var oldData = dataField.GetValue(null);
         var commandType = mod.GetType("AutomaticDSP.Tasks.CommandState", true)!;
