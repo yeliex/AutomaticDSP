@@ -2584,6 +2584,7 @@ namespace AutomaticDSP.State
                     ["items"] = TechPrototypeItems(tech),
                     ["unlockRecipes"] = IntArray(tech.UnlockRecipes, 128, false),
                     ["unlockFunctions"] = IntArray(tech.UnlockFunctions, 128, false),
+                    ["unlockValues"] = tech.UnlockValues,
                     ["addItems"] = TechPrototypeAddItems(tech),
                     ["hashUploaded"] = ReflectionReader.GetLong(techState, 0, "hashUploaded"),
                     ["hashNeeded"] = ReflectionReader.GetLong(techState, SafeLong(() => tech.GetHashNeeded(0), 0), "hashNeeded"),

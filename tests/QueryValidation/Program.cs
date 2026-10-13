@@ -48,3 +48,4 @@ LocalNavigationValidation.Run(assembly);
 StationRemoteValidation.Run(assembly);
 StationOptionsValidation.Run(assembly);
 CollectorStorageValidation.Run(assembly);
+InserterTechValidation.Run(assembly);

@@ -30,6 +30,7 @@ namespace AutomaticDSP
         private GameStateQueryService stateQueryService;
         private TaskQueueService taskQueueService;
         private TaskStatusOverlay taskStatusOverlay;
+        private readonly InserterTechEffectRepair inserterTechEffectRepair = new InserterTechEffectRepair();
 
         private void Awake()
         {
@@ -68,6 +69,8 @@ namespace AutomaticDSP
 
         private void Update()
         {
+            inserterTechEffectRepair.Update(GameMain.isRunning && !DSPGame.IsMenuDemo && GameMain.mainPlayer?.mecha != null
+                ? GameMain.history : null);
             GameNoticeService.Update();
             stateQueryService?.Update();
             gameControlService?.Update();
@@ -79,6 +82,7 @@ namespace AutomaticDSP
         {
             taskStatusOverlay?.Dispose();
             httpServer?.Dispose();
+            inserterTechEffectRepair.Dispose();
             historyStore?.Dispose();
         }
     }
