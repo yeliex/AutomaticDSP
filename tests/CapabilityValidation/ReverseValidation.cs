@@ -15,9 +15,10 @@ public class BeltWindow {
 }
 public class Mecha { public int buildArea=80; public Forge forge=new(); }
 namespace AutomaticDSP.Tasks {
-    internal static class TaskStatusNames { public const string CommandFailed="FAILED",CommandSucceeded="SUCCEEDED"; }
+    internal static class TaskStatusNames { public const string CommandFailed="FAILED",CommandSucceeded="SUCCEEDED",CommandRunning="RUNNING",CommandPending="PENDING",CommandCancelled="CANCELLED"; }
     internal class TaskState {}
     internal sealed partial class TaskCommandExecutor {
+        private static object BatchResult(CommandState command) => command.Result;
         internal string Code,Status; internal object Result;
         private void finishCommand(CommandState c,string status,string code,string message,DateTimeOffset now,object result){Code=code;Status=status;Result=result;}
         private static bool TryGetPlayer(out Player p,out string code,out string message){p=GameMain.mainPlayer;code=message=null;return true;}
@@ -58,8 +59,14 @@ namespace AutomaticDSP.Tasks {
             Program.Check(exec.Code=="target_not_found"&&build.Dismantled==0,"落成后预建槽为空，取消不会调用实体拆除或退款");
             f.prebuildPool[1]=new(){id=1};exec.ExecuteCancelPrebuild(new(){TargetId=1},DateTimeOffset.UtcNow);
             Program.Check(exec.Status=="SUCCEEDED"&&build.Dismantled==-1,"有效预建仅按负对象 ID 交给原生取消");
-            build.Succeeds=false;exec.ExecuteCancelPrebuild(new(){TargetId=1},DateTimeOffset.UtcNow);
+            f.prebuildPool[1]=new(){id=1};build.Succeeds=false;exec.ExecuteCancelPrebuild(new(){TargetId=1},DateTimeOffset.UtcNow);
             Program.Check(exec.Code=="dismantle_failed","原生拒绝取消不伪造成功");
+            build.Succeeds=true;build.Clears=false;exec.ExecuteCancelPrebuild(new(){TargetId=1},DateTimeOffset.UtcNow);
+            Program.Check(exec.Code=="dismantle_failed","原生返回 true 但预建槽未清除时仍不报告成功");
+            build.Clears=true;
+            var batch=new CommandState {BatchIndex=1,BatchCommands=new List<CommandState>{new(){Status="SUCCEEDED"},new(){Status="RUNNING"},new(){Status="PENDING"}}};
+            exec.StopCommandEffects(batch);
+            Program.Check(batch.BatchCommands[0].Status=="SUCCEEDED"&&batch.BatchCommands[1].Status=="CANCELLED"&&batch.BatchCommands[2].Status=="CANCELLED","取消等待中的批量命令保留已完成结果并终止剩余子项");
         }
     }
 }

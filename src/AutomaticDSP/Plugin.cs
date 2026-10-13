@@ -82,6 +82,7 @@ namespace AutomaticDSP
         {
             taskStatusOverlay?.Dispose();
             httpServer?.Dispose();
+            taskQueueService?.Dispose();
             inserterTechEffectRepair.Dispose();
             historyStore?.Dispose();
         }

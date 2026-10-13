@@ -50,6 +50,18 @@ namespace AutomaticDSP.Tasks
 
         public object Result { get; set; }
 
+        public List<CommandState> BatchCommands { get; set; }
+
+        public bool IsBatchChild { get; set; }
+
+        public int BatchIndex { get; set; }
+
+        public object BuildSession { get; set; }
+
+        public List<BuildWaitTarget> CancellationTargets { get; set; }
+
+        public BuildWaitTarget CancellationTarget { get; set; }
+
         public long? StartGameTick { get; set; }
 
         public bool ActionIssued { get; set; }

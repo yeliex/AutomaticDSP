@@ -73,8 +73,9 @@ namespace AutomaticDSP.Tasks
                 return;
             }
             var removed = player.controller?.actionBuild?.DoDismantleObject(-id) == true;
+            removed = removed && factory.prebuildPool[id].id != id;
             finishCommand(command, removed ? CommandSucceeded : CommandFailed, removed ? null : "dismantle_failed",
-                removed ? null : "Native prebuild cancellation failed.", now, new JsonObject { ["prebuildId"] = id });
+                removed ? null : "Native prebuild cancellation failed.", now, new JsonObject { ["prebuildId"] = id, ["removed"] = removed });
         }
 
         private void ExecuteDismissNotice(CommandState command, DateTimeOffset now)

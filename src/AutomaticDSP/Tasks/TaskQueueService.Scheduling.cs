@@ -40,6 +40,15 @@ namespace AutomaticDSP.Tasks
         private static void ReadDependencies(CommandState command, List<CommandState> previous)
         {
             ValidateEntityReferenceParameters(command);
+            if (command.Request.ExtensionData != null && command.Request.ExtensionData.TryGetValue("batch", out var batchToken) && batchToken is JArray batch)
+                foreach (var entry in batch.OfType<JObject>())
+                {
+                    var child = new CommandState(command.Id, command.Type, new TaskCommandRequest
+                    { ExtensionData = entry.Properties().ToDictionary(p => p.Name, p => p.Value, StringComparer.OrdinalIgnoreCase) });
+                    ReadDependencies(child, previous);
+                    foreach (var dependency in child.Dependencies)
+                        if (!command.Dependencies.Contains(dependency)) command.Dependencies.Add(dependency);
+                }
             var ids = new List<string>(command.Request.DependsOn ?? new List<string>());
             // 现有实体引用隐含落成依赖；只允许前序命令，提交时排除环与拼写错误。
             if (command.Request.ExtensionData != null)
@@ -73,7 +82,9 @@ namespace AutomaticDSP.Tasks
                 }
                 foreach (var command in task.Commands)
                 {
-                    if (command.Status != CommandRunning) continue;
+                    // 批量等待落成会归还通道，但仍沿用首次执行时的超时起点。
+                    if (command.Status != CommandRunning &&
+                        !(command.Status == CommandPending && command.BatchCommands != null && IsCommandTimedOut(command, now))) continue;
                     AdvanceCommandLocked(task, command, now);
                     if (task.HadCommandFailure && task.StopOnFailure) break;
                 }

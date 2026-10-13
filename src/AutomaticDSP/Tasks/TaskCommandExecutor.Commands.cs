@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using Newtonsoft.Json.Linq;
 using AutomaticDSP.State;
 using AutomaticDSP.Serialization;
 using UnityEngine;
@@ -518,6 +520,16 @@ namespace AutomaticDSP.Tasks
 
         private void ExecuteDismantleEntityLocked(TaskState task, CommandState command, DateTimeOffset now)
         {
+            if (TryGetToken(command, "chainReaction", out var chain) && chain.Type != JTokenType.Boolean)
+            {
+                finishCommand(command, CommandFailed, "invalid_command", "chainReaction 必须为布尔值。", now, null);
+                return;
+            }
+            if (TryGetToken(command, "prebuildId", out _))
+            {
+                ExecuteCancelConstruction(task, command, now);
+                return;
+            }
             if (!TryGetPlayer(out var player, out var errorCode, out var errorMessage))
             {
                 finishCommand(command, CommandFailed, errorCode, errorMessage, now, null);
@@ -593,32 +605,48 @@ namespace AutomaticDSP.Tasks
 
             player.ClearOrders();
             command.Phase = "dismantling";
-            var before = PlayerItemCounts(player);
-            var summary = EntitySummary(entityId, entity);
-            var dismantled = actionBuild.DoDismantleObject(entityId);
-            if (!dismantled)
+            var tool = new BuildTool_Dismantle();
+            var results = new List<JsonObject>();
+            try
             {
-                finishCommand(command, CommandFailed, "dismantle_failed", $"Entity could not be dismantled: {entityId}", now, summary);
-                return;
-            }
-
-            var after = PlayerItemCounts(player);
-            var returnedItems = PositiveItemDeltas(before, after);
-            finishCommand(
-                command,
-                CommandSucceeded,
-                null,
-                null,
-                now,
-                new JsonObject
+                tool._Init(GameMain.data);
+                actionBuild.SetFactoryReferences();
+                tool.SetFactoryReferences();
+                tool.castObjectId = entityId;
+                tool.cursorType = 0;
+                tool.chainReaction = GetBool(command, "chainReaction", false);
+                tool.DeterminePreviews();
+                var previews = tool.buildPreviews.ToArray();
+                var failed = false;
+                foreach (var preview in previews)
                 {
-                    ["entityId"] = entityId,
-                    ["protoId"] = entity.protoId,
-                    ["protoName"] = ItemName(entity.protoId),
-                    ["position"] = Vector(entity.pos),
-                    ["returnedItems"] = ItemCountList(returnedItems),
-                    ["returnedCount"] = TotalItemCount(returnedItems)
-                });
+                    var id = preview.objId;
+                    var present = id > 0 ? factory.entityPool[id].id == id : factory.prebuildPool[-id].id == -id;
+                    var nativeSucceeded = present && preview.condition == EBuildCondition.Ok && actionBuild.DoDismantleObject(id);
+                    var existsAfter = id > 0 ? factory.entityPool[id].id == id : factory.prebuildPool[-id].id == -id;
+                    var removed = nativeSucceeded && !existsAfter;
+                    failed |= present && !removed;
+                    results.Add(new JsonObject { ["objectId"] = id, ["removed"] = removed,
+                        ["state"] = !present ? "already_absent" : removed ? "removed" : "failed",
+                        ["nativeSucceeded"] = nativeSucceeded, ["nativeCondition"] = preview.condition.ToString() });
+                    if (failed && GetBool(command, "stopOnFailure", task.StopOnFailure)) break;
+                }
+                var succeeded = previews.Length > 0 && !failed && factory.entityPool[entityId].id != entityId;
+                finishCommand(command, succeeded ? CommandSucceeded : CommandFailed, succeeded ? null : "dismantle_failed",
+                    succeeded ? null : "原生拆除未完成，请检查逐项结果。", now, new JsonObject
+                    {
+                        ["entityId"] = entityId, ["removed"] = factory.entityPool[entityId].id != entityId,
+                        ["protoId"] = entity.protoId, ["protoName"] = ItemName(entity.protoId), ["position"] = Vector(entity.pos),
+                        ["selectedCount"] = previews.Length, ["removedCount"] = results.Count(r => (bool)r["removed"]),
+                        ["results"] = results
+                    });
+            }
+            catch (Exception ex)
+            {
+                finishCommand(command, CommandFailed, "native_dismantle_error", ex.Message, now,
+                    new JsonObject { ["results"] = results, ["stateMayHaveChanged"] = true });
+            }
+            finally { tool._Free(); }
         }
 
         private static void SnapshotMiningInventory(CommandState command)

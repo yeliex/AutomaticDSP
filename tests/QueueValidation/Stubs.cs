@@ -4,7 +4,7 @@ using AutomaticDSP.Tasks;
 namespace UnityEngine { public struct Vector3 {} }
 public class ForgeTask {}
 public class OrderNode {}
-public class BuildPreview { public void Clone(BuildPreview other) {} }
+public class BuildPreview { public int coverObjId; public void Clone(BuildPreview other) {} }
 public enum EObjectType { None }
 public static class GameMain { public static long gameTick; }
 namespace BepInEx.Logging { public class ManualLogSource { public static readonly List<string> Warnings = new(); public void LogWarning(object message) { Warnings.Add(message.ToString()); } } }
@@ -20,6 +20,9 @@ namespace AutomaticDSP.Tasks
         public static readonly List<string> Stops=new List<string>();
         private readonly TaskCommandFinisher finish;
         public TaskCommandExecutor(TaskCommandFinisher finish) {this.finish=finish;}
+        public Func<string, string, CommandState> FindCommand { get; set; }
+        public void RefreshConstructionTracking() {}
+        public void Dispose() {}
         public void Execute(TaskState task,CommandState c,DateTimeOffset now) => Behavior(c,finish,now);
         public bool AreEntityReferencesReady(TaskState task,CommandState c,DateTimeOffset now) => ReferenceBehavior?.Invoke(c) ?? (c.Id != "connect" || Program.EntityReady);
         public void ExitCommandBuildMode(CommandState c) {c.EnteredBuildMode=false;}

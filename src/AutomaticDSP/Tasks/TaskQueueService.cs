@@ -23,6 +23,7 @@ namespace AutomaticDSP.Tasks
             this.historyStore = historyStore;
             this.log = log;
             this.commandExecutor = new TaskCommandExecutor(FinishCommandLocked);
+            this.commandExecutor.FindCommand = (taskId, commandId) => tasks.Find(t => t.Id == taskId)?.Commands.Find(c => c.Id == commandId);
         }
 
         public JsonObject Enqueue(TaskSubmitRequest request)
@@ -150,8 +151,14 @@ namespace AutomaticDSP.Tasks
 
         public void Update()
         {
-            lock (queueLock) AdvanceAllTasksLocked(DateTimeOffset.UtcNow);
+            lock (queueLock)
+            {
+                commandExecutor.RefreshConstructionTracking();
+                AdvanceAllTasksLocked(DateTimeOffset.UtcNow);
+            }
         }
+
+        public void Dispose() => commandExecutor.Dispose();
 
         private TaskState CreateTask(TaskSubmitRequest request)
         {
@@ -203,8 +210,8 @@ namespace AutomaticDSP.Tasks
         {
             command.Status = CommandRunning;
             command.Phase = "validating";
-            command.StartedAt = now;
-            command.StartGameTick = CurrentGameTick();
+            command.StartedAt = command.StartedAt ?? now;
+            command.StartGameTick = command.StartGameTick ?? CurrentGameTick();
         }
 
         private bool IsCommandTimedOut(CommandState command, DateTimeOffset now)
@@ -246,7 +253,7 @@ namespace AutomaticDSP.Tasks
             command.ErrorCode = errorCode;
             command.ErrorMessage = errorMessage;
             command.Result = result;
-            WriteCommandHistory(command);
+            if (!command.IsBatchChild) WriteCommandHistory(command);
         }
 
         private void CompleteTaskLocked(TaskState task, string status, DateTimeOffset now)

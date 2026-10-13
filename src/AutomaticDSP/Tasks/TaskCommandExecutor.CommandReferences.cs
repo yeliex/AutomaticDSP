@@ -10,6 +10,13 @@ namespace AutomaticDSP.Tasks
     {
         public bool AreEntityReferencesReady(TaskState task, CommandState command, DateTimeOffset now)
         {
+            if (command.BatchCommands != null && command.BatchIndex < command.BatchCommands.Count)
+            {
+                var child = command.BatchCommands[command.BatchIndex];
+                var ready = AreEntityReferencesReady(task, child, now);
+                if (!ready) command.Phase = child.Phase;
+                return ready;
+            }
             if (now < command.NextEntityReferenceCheck) return false;
             var references = new List<KeyValuePair<string, int>>();
             foreach (var name in new[] { "target", "start", "end", "input", "output" })

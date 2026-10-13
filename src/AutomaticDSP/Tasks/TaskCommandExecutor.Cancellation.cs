@@ -16,6 +16,16 @@ namespace AutomaticDSP.Tasks
 
         public void StopCommandEffects(CommandState command)
         {
+            if (command.BatchCommands != null && command.BatchIndex < command.BatchCommands.Count)
+            {
+                var child = command.BatchCommands[command.BatchIndex];
+                StopCommandEffects(child);
+                ExitCommandBuildMode(child);
+                foreach (var item in command.BatchCommands)
+                    if (item.Status == TaskStatusNames.CommandRunning || item.Status == TaskStatusNames.CommandPending)
+                        item.Status = TaskStatusNames.CommandCancelled;
+                command.Result = BatchResult(command);
+            }
             command.Flight?.Dispose();
             if (!command.OwnsPlayerOrders) return;
             switch (command.NormalizedType)

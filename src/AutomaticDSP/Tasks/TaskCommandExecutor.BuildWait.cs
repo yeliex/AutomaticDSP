@@ -10,6 +10,8 @@ namespace AutomaticDSP.Tasks
     {
         private void CompleteBuildSubmission(CommandState command, DateTimeOffset now)
         {
+            constructionTracker.Refresh();
+            command.BuildSession = constructionTracker.Session;
             if (command.BuildPlanetId == 0) command.BuildPlanetId = GameMain.localPlanet.id;
             if (command.BuildTargets == null)
                 command.BuildTargets = new List<BuildWaitTarget>
@@ -31,6 +33,7 @@ namespace AutomaticDSP.Tasks
             result["prebuildIds"] = prebuildIds;
             result["entityIds"] = entityIds;
             result["submitted"] = true;
+            constructionTracker.Track(command);
             if (objectIds.Count == 1)
             {
                 if (objectIds[0] < 0) result["prebuildId"] = -objectIds[0];

@@ -185,6 +185,7 @@ namespace AutomaticDSP.Tasks
                 }
                 // 原生允许缺料预建；施工半径和后续补料由原生无人机系统处理。
                 command.BuildPlanetId = factory.planet.id;
+                command.BuildSession = constructionTracker.Session;
                 stateMayHaveChanged = true;
                 tool.CreatePrebuilds();
                 // 原生升级缺料时仍返回覆盖对象 ID，必须核对型号，不能当作已下达的升级。
@@ -209,22 +210,6 @@ namespace AutomaticDSP.Tasks
                     ["sandDelta"] = player.sandCount - sandBefore, ["stateMayHaveChanged"] = true
                 };
                 command.Result = result;
-                if ((!allowPartial && skipped.Count > 0) || (placed.Length == 0 && previews.Length > 0))
-                {
-                    finishCommand(command, CommandFailed, upgradeFailed ? "upgrade_failed" : "build_failed",
-                        "原生蓝图未完成全部下达或覆盖升级；检查 skipped，已发生的改动不会撤销。", now,
-                        result);
-                    return;
-                }
-                if (placed.Length == 0)
-                {
-                    result["submitted"] = true;
-                    result["objectIds"] = new int[0];
-                    result["prebuildIds"] = new int[0];
-                    result["entityIds"] = new int[0];
-                    finishCommand(command, CommandSucceeded, null, null, now, result);
-                    return;
-                }
                 command.BuildTargets = new List<BuildWaitTarget>();
                 var retainedIndices = new Dictionary<BuildPreview, int>();
                 foreach (var preview in placed)
@@ -240,6 +225,17 @@ namespace AutomaticDSP.Tasks
                     var outputIndex = placed[i].output != null && retainedIndices.TryGetValue(placed[i].output, out var output) ? output : -1;
                     retained.input = inputIndex < 0 ? null : command.BuildTargets[inputIndex].Preview;
                     retained.output = outputIndex < 0 ? null : command.BuildTargets[outputIndex].Preview;
+                }
+                // 即使部分下达失败，也保留已创建的目标，供取消施工使用。
+                constructionTracker.Track(command);
+                if ((!allowPartial && skipped.Count > 0) || (placed.Length == 0 && previews.Length > 0))
+                {
+                    result["objectIds"] = placed.Select(p => p.objId).ToArray();
+                    result["prebuildIds"] = placed.Where(p => p.objId < 0).Select(p => -p.objId).ToArray();
+                    result["entityIds"] = placed.Where(p => p.objId > 0).Select(p => p.objId).ToArray();
+                    finishCommand(command, CommandFailed, upgradeFailed ? "upgrade_failed" : "build_failed",
+                        "原生蓝图未完成全部下达或覆盖升级；检查 skipped，已发生的改动不会撤销。", now, result);
+                    return;
                 }
             }
             catch (Exception ex)

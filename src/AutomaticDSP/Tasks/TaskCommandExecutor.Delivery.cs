@@ -9,9 +9,11 @@ namespace AutomaticDSP.Tasks
     {
         private void ExecuteDeliveryCommand(CommandState command, DateTimeOffset now)
         {
-            if (!TryGetPlayer(out var player, out var code, out var message))
+            // 随身库存及物流格配置不依赖本地行星，航行中也可使用。
+            var player = GameMain.mainPlayer;
+            if (player?.package == null || player.deliveryPackage == null)
             {
-                finishCommand(command, CommandFailed, code, message, now, null);
+                finishCommand(command, CommandFailed, "game_not_ready", "玩家及随身库存尚未就绪。", now, null);
                 return;
             }
             var delivery = player.deliveryPackage;
@@ -116,23 +118,6 @@ namespace AutomaticDSP.Tasks
         private static bool IsPlayerInventory(string inventory)
         {
             return inventory == "package" || inventory == "delivery" || inventory == "hand";
-        }
-
-        private static Dictionary<int, int> PlayerItemCounts(Player player)
-        {
-            var counts = StorageItemCounts(player.package);
-            foreach (var grid in player.deliveryPackage.grids)
-            {
-                if (grid.itemId <= 0 || grid.count <= 0) continue;
-                counts.TryGetValue(grid.itemId, out var count);
-                counts[grid.itemId] = count + grid.count;
-            }
-            if (player.inhandItemId > 0 && player.inhandItemCount > 0)
-            {
-                counts.TryGetValue(player.inhandItemId, out var count);
-                counts[player.inhandItemId] = count + player.inhandItemCount;
-            }
-            return counts;
         }
 
         private static int TakePlayerInventory(Player player, string inventory, int itemId, int count, out int inc)

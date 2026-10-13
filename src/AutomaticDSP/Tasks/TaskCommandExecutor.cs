@@ -18,6 +18,13 @@ namespace AutomaticDSP.Tasks
     internal sealed partial class TaskCommandExecutor
     {
         private readonly TaskCommandFinisher finishCommand;
+        private readonly ConstructionTracker constructionTracker = new ConstructionTracker();
+
+        public void RefreshConstructionTracking() => constructionTracker.Refresh();
+
+        public void Dispose() => constructionTracker.Dispose();
+
+        public Func<string, string, CommandState> FindCommand { get; set; }
 
         public TaskCommandExecutor(TaskCommandFinisher finishCommand)
         {
@@ -26,6 +33,8 @@ namespace AutomaticDSP.Tasks
 
         public void Execute(TaskState task, CommandState command, DateTimeOffset now)
         {
+            constructionTracker.Refresh();
+            if (TryExecuteBatch(task, command, now)) return;
             switch (command.NormalizedType)
             {
                 case "createdysonorbit":
@@ -142,7 +151,7 @@ namespace AutomaticDSP.Tasks
                     ExecuteRemoveForgeTask(command, now);
                     return;
                 case "cancelprebuild":
-                    ExecuteCancelPrebuild(command, now);
+                    ExecuteCancelConstruction(task, command, now);
                     return;
                 case "dismissnotice":
                     ExecuteDismissNotice(command, now);

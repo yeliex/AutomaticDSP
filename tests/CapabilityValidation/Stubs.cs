@@ -51,7 +51,7 @@ public class Player
 public enum ECommand { None, Move, Build }
 public class OrderNode { }
 public class Command { public ECommand type; public void SetNoneCommand() { type = ECommand.None; } }
-public class BuildAction { public int Dismantled; public bool Succeeds=true; public bool DoDismantleObject(int id){Dismantled=id;return Succeeds;} public int Closed; public void Close() { Closed++; } }
+public class BuildAction { public int Dismantled; public bool Succeeds=true,Clears=true; public bool DoDismantleObject(int id){Dismantled=id;if(Succeeds && Clears && id<0)GameMain.localPlanet.factory.prebuildPool[-id]=default;return Succeeds;} public int Closed; public void Close() { Closed++; } }
 public class PlayerController { public ActionPick actionPick=new(); public Command cmd = new(); public BuildAction actionBuild = new(); }
 namespace AutomaticDSP.Tasks
 {
@@ -62,6 +62,10 @@ namespace AutomaticDSP.Tasks
         public bool EnteredBuildMode, OwnsPlayerOrders;
         public int ItemId;public int TargetId; public string NormalizedType;
         public FlightInput Flight;
+        public List<CommandState> BatchCommands;
+        public int BatchIndex;
+        public object Result;
+        public string Status;
     }
 }
 namespace UnityEngine { public static class Time { public static float realtimeSinceStartup; } }

@@ -25,5 +25,9 @@ namespace AutomaticDSP.Tasks
         public BuildPreview Preview { get; }
 
         public int EntityId { get; set; }
+
+        public bool CreatedPrebuild => ObjectId < 0 && (Preview == null || Preview.coverObjId == 0);
+
+        public bool PrebuildRemoved { get; set; }
     }
 }
